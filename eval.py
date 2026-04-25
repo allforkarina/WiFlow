@@ -18,13 +18,13 @@ from train import COCO_BONE_EDGES, compute_metrics, prepare_model_input, select_
 def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> WiFlowModel:
     """Load a trained WiFlow model from a checkpoint."""
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)   # load the checkpoint
     if "model_state_dict" not in checkpoint:
         raise KeyError(f"Checkpoint is missing model_state_dict: {checkpoint_path}")
 
-    model = WiFlowModel().to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
+    model = WiFlowModel().to(device)                                # load the model
+    model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
+    model.eval()                                                    # eval mode
     return model
 
 
@@ -37,8 +37,8 @@ def plot_skeleton(
 ) -> None:
     """Plot one 2D skeleton on a Matplotlib axis."""
 
-    ax.scatter(keypoints[:, 0], keypoints[:, 1], c=color, s=10)
-    for start, end in edges:
+    ax.scatter(keypoints[:, 0], keypoints[:, 1], c=color, s=10)     # plot keypoints
+    for start, end in edges:                                        # plot bones (connection)
         ax.plot(
             [keypoints[start, 0], keypoints[end, 0]],
             [keypoints[start, 1], keypoints[end, 1]],
@@ -85,14 +85,14 @@ def evaluate_model(
 
     with torch.no_grad():
         for batch in loader:
-            model_input, target = prepare_model_input(batch, device)
-            prediction = model(model_input)
-            metrics = compute_metrics(prediction, target)
+            model_input, target = prepare_model_input(batch, device)    # get test data
+            prediction = model(model_input)                             # model prediction
+            metrics = compute_metrics(prediction, target)               # compute metrics for the batch
             batch_size = target.shape[0]
             sample_count += batch_size
-            update_metric_totals(totals, metrics, batch_size)
+            update_metric_totals(totals, metrics, batch_size)           # accumulate metrics weighted by batch size
 
-    return average_metrics(totals, sample_count)
+    return average_metrics(totals, sample_count)                        # average the metrics
 
 
 def save_visualizations(
@@ -108,21 +108,23 @@ def save_visualizations(
     visualized_pairs: set[tuple[str, str]] = set()
 
     for index in range(len(dataset)):
-        sample = dataset[index]
-        action = str(sample["action"])
-        environment = str(sample["environment"])
-        pair = (action, environment)
+        sample = dataset[index] 
+        action = str(sample["action"])                  # get action from the sample
+        environment = str(sample["environment"])        # get environment from the sample  
+        pair = (action, environment)                    # each pair sample one visualization
 
         if pair in visualized_pairs:
             continue
         if max_visualizations is not None and len(visualized_pairs) >= max_visualizations:
             break
 
+        # sample and predict
         csi_amplitude = torch.as_tensor(sample["csi_amplitude"], dtype=torch.float32, device=device).unsqueeze(0)
         model_input = csi_amplitude.reshape(1, 342, 10)
         with torch.no_grad():
             prediction = model(model_input).detach().cpu().numpy()[0]
 
+        # visualize the CSI heatmap and the predicted vs. ground truth skeletons
         target = np.asarray(sample["keypoints"], dtype=np.float32)
         target_denorm = denormalize_keypoints(
             target,
