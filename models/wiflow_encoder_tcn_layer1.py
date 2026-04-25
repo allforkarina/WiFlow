@@ -27,10 +27,10 @@ class CausalTCNBlock(nn.Module):
         residual = x
         x = F.pad(x, (self.left_padding, 0))                                # pad for casual convolution
         x = self.temporal_conv(x)                                           # temporal convolution
-        x = self.norm(x)
-        x = self.activation(x)
+        x = self.norm(x)                                                    # batch normalization
+        x = self.activation(x)                                              # activation function
         if self.use_residual:
-            x = x + residual
+            x = x + residual                                                # residual connection
         return x
 
 
