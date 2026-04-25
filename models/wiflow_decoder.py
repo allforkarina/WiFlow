@@ -4,6 +4,26 @@ import torch
 from torch import nn
 
 
+class TemporalAttentionPooling(nn.Module):
+    """Learn temporal weights for each keypoint feature."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.attention_logits = nn.Conv2d(
+            in_channels=channels,
+            out_channels=1,
+            kernel_size=1,
+        )
+
+    def compute_attention_weights(self, x: torch.Tensor) -> torch.Tensor:
+        logits = self.attention_logits(x)
+        return torch.softmax(logits, dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights = self.compute_attention_weights(x)
+        return torch.sum(x * weights, dim=-1, keepdim=True)
+
+
 class WiFlowDecoder(nn.Module):
     """Lightweight decoder that maps [B, 64, 17, 10] to [B, 17, 2]."""
 
@@ -25,11 +45,11 @@ class WiFlowDecoder(nn.Module):
             out_channels=2,
             kernel_size=1,
         )
-        self.temporal_pool = nn.AdaptiveAvgPool2d((17, 1))      # average pool the temporal dim
+        self.temporal_pool = TemporalAttentionPooling(channels=32)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.refinement(x)
-        x = self.coordinate_projection(x)
         x = self.temporal_pool(x)
+        x = self.coordinate_projection(x)
         x = x.squeeze(-1)
         return x.transpose(1, 2)
