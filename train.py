@@ -34,23 +34,23 @@ COCO_BONE_EDGES: tuple[tuple[int, int], ...] = (
     (12, 14),
     (14, 16),
 )
-PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)
-RIGHT_SHOULDER_INDEX = 6
-LEFT_HIP_INDEX = 11
+PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)   # PCK Threshold
+RIGHT_SHOULDER_INDEX = 6                                        # right shoulder keypoint indice
+LEFT_HIP_INDEX = 11                                             # left hip keypoint indice
 
 
 @dataclass(frozen=True)
 class TrainConfig:
     dataset_root: str
-    output_dir: str = "outputs/train"
-    epochs: int = 50
-    batch_size: int = 64
-    lr: float = 1e-4
-    weight_decay: float = 5e-5
-    lambda_bone: float = 0.2
-    smooth_l1_beta: float = 0.1
-    num_workers: int = 0
-    device: str = "cuda"
+    output_dir: str = "outputs/train"                           # directory for logs and checkpoints
+    epochs: int = 50                                            # training epochs
+    batch_size: int = 64                                        # batch size
+    lr: float = 1e-4                                            # learning rate
+    weight_decay: float = 5e-5                                  # weight decay
+    lambda_bone: float = 0.2                                    # bone loss weight
+    smooth_l1_beta: float = 0.1                                 # Smooth L1 loss beta
+    num_workers: int = 0                                        # number of data loading workers
+    device: str = "cuda"                                        # device to use
     seed: int = 42
     subset_size: int | None = None
 
@@ -66,24 +66,28 @@ def prepare_model_input(batch: Mapping[str, torch.Tensor], device: torch.device)
     if keypoints.ndim != 3 or keypoints.shape[1:] != (17, 2):
         raise ValueError(f"Expected keypoints shape [B, 17, 2], got {tuple(keypoints.shape)}")
 
-    model_input = csi_amplitude.reshape(csi_amplitude.shape[0], 342, 10)
-    return model_input, keypoints
+    model_input = csi_amplitude.reshape(csi_amplitude.shape[0], 342, 10)    # reshape 3 x 114 -> 342, [B, 342, 10]
+    return model_input, keypoints                                           # [B, 342, 10], [B, 17, 2]
 
 
 def bone_length_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,
+    prediction: torch.Tensor,                               # [B, 17, 2]
+    target: torch.Tensor,                                   # [B, 17, 2]
+    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,     # [B, E, 2] keypoints connection
     beta: float = 0.1,
 ) -> torch.Tensor:
     """Compute Smooth L1 loss between predicted and target bone lengths."""
 
+    # turn edges connection list into a tensor [E, 2], from what to what
     edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
+    
     pred_lengths = torch.linalg.vector_norm(
+        # dim = 0 -> batch, so the pred_length of all connection is from [x1, y1] to [x2, y2]
         prediction[:, edge_index[:, 0]] - prediction[:, edge_index[:, 1]],
         dim=-1,
     )
     target_lengths = torch.linalg.vector_norm(
+        # dim = 0 -> batch, so the pred_length of all connection is from [x1, y1] to [x2, y2]
         target[:, edge_index[:, 0]] - target[:, edge_index[:, 1]],
         dim=-1,
     )
@@ -98,8 +102,8 @@ def compute_losses(
 ) -> Dict[str, torch.Tensor]:
     """Return total, pose, and bone losses for one batch."""
 
-    pose = F.smooth_l1_loss(prediction, target, beta=beta)
-    bone = bone_length_loss(prediction, target, beta=beta)
+    pose = F.smooth_l1_loss(prediction, target, beta=beta)                  # pose estimation loss
+    bone = bone_length_loss(prediction, target, beta=beta)                  # body constraint loss
     total = pose + lambda_bone * bone
     return {"loss": total, "pose_loss": pose, "bone_loss": bone}
 
@@ -107,7 +111,7 @@ def compute_losses(
 def mpjpe(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Mean per-joint Euclidean distance."""
 
-    return torch.linalg.vector_norm(prediction - target, dim=-1).mean()
+    return torch.linalg.vector_norm(prediction - target, dim=-1).mean()     # mpjpe metric
 
 
 def pck(
@@ -150,25 +154,25 @@ def run_epoch(
     sample_count = 0
 
     for batch in loader:
-        model_input, target = prepare_model_input(batch, device)
+        model_input, target = prepare_model_input(batch, device)    # load batch data
 
         with torch.set_grad_enabled(is_training):
-            prediction = model(model_input)
-            losses = compute_losses(
+            prediction = model(model_input)                         # predict
+            losses = compute_losses(                                # loss
                 prediction,
                 target,
                 lambda_bone=criterion_config.lambda_bone,
                 beta=criterion_config.smooth_l1_beta,
             )
-            metrics = compute_metrics(prediction.detach(), target)
+            metrics = compute_metrics(prediction.detach(), target)  # evaluat the metrics
 
             if is_training:
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True)               # backpropagation
                 losses["loss"].backward()
                 optimizer.step()
 
         batch_size = target.shape[0]
-        sample_count += batch_size
+        sample_count += batch_size                                  # calculate the total loss
         for name, value in {**losses, **metrics}.items():
             totals[name] = totals.get(name, 0.0) + float(value.detach().cpu()) * batch_size
 
@@ -231,15 +235,15 @@ def run_training(config: TrainConfig) -> None:
     device = select_device(config.device)
     output_dir = Path(config.output_dir)
 
-    loaders = create_data_loaders(
-        dataset_root=config.dataset_root,
-        batch_size=config.batch_size,
+    loaders = create_data_loaders(              # load data
+        dataset_root=config.dataset_root,       # root
+        batch_size=config.batch_size,           # batch size
         seed=config.seed,
-        num_workers=config.num_workers,
+        num_workers=config.num_workers,         # num_workers for data loading
     )
-    train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
-    val_loader = maybe_subset_loader(loaders["val"], config.subset_size)
 
+    train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
+    val_loader = maybe_subset_loader(loaders["val"], config.subset_size)    
     model = WiFlowModel().to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = ReduceLROnPlateau(
@@ -250,27 +254,29 @@ def run_training(config: TrainConfig) -> None:
         min_lr=1e-7,
     )
 
+    # dry run, sanity check for model forward pass and output shape
     first_batch = next(iter(train_loader))
     model_input, target = prepare_model_input(first_batch, device)
     with torch.no_grad():
         output = model(model_input)
     print(f"Sanity shapes: input={tuple(model_input.shape)}, output={tuple(output.shape)}, label={tuple(target.shape)}")
-
+    
     if output.shape != target.shape:
         raise ValueError(f"Model output shape {tuple(output.shape)} does not match label shape {tuple(target.shape)}")
+
+    # ======== formal training loop ========
 
     best_val_mpjpe = float("inf")
     best_val_pck_0_2 = -float("inf")
     log_path = output_dir / "train_log.csv"
-
     for epoch in range(1, config.epochs + 1):
-        start_time = time.perf_counter()
+        start_time = time.perf_counter()                                # epoch start time
         train_metrics = run_epoch(model, train_loader, config, device, optimizer=optimizer)
-        val_metrics = run_epoch(model, val_loader, config, device)
-        scheduler.step(val_metrics["mpjpe"])
-
-        current_lr = optimizer.param_groups[0]["lr"]
-        epoch_time = time.perf_counter() - start_time
+        val_metrics = run_epoch(model, val_loader, config, device)      # validation metrics
+        scheduler.step(val_metrics["mpjpe"])                            # calculate mpjpe
+        current_lr = optimizer.param_groups[0]["lr"]                    # current learning rate
+        epoch_time = time.perf_counter() - start_time                   # epoch duration
+        
         row: Dict[str, float | int] = {
             "epoch": epoch,
             "train_loss": train_metrics["loss"],
@@ -287,7 +293,7 @@ def run_training(config: TrainConfig) -> None:
             "current_lr": current_lr,
             "epoch_time": epoch_time,
         }
-        append_csv_row(log_path, row)
+        append_csv_row(log_path, row)                                   # add to csv log
 
         save_checkpoint(
             output_dir / "last.pth",
@@ -298,6 +304,7 @@ def run_training(config: TrainConfig) -> None:
             best_metric=val_metrics["mpjpe"],
             config=config,
         )
+        
         if val_metrics["mpjpe"] < best_val_mpjpe:
             best_val_mpjpe = val_metrics["mpjpe"]
             save_checkpoint(
@@ -327,6 +334,7 @@ def run_training(config: TrainConfig) -> None:
             f"val_mpjpe={val_metrics['mpjpe']:.6f} "
             f"val_pck_0_2={val_metrics['pck_0_2']:.6f} "
             f"lr={current_lr:.2e}"
+            f"epoch_time={epoch_time:.1f}s"
         )
 
 
