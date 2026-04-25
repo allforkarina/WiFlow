@@ -21,7 +21,7 @@ class WiFlowEncoder(nn.Module):
         return x.transpose(2, 3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self._prepare_axial_attention_input(x)
-        return self.layer3(x)
+        x = self.layer1(x)                                  # [B, 340, 10]
+        x = self.layer2(x)                                  # [B, 64, 10, 17]
+        x = self._prepare_axial_attention_input(x)          # [B, 64, 17, 10]
+        return self.layer3(x)                               # [B, 64, 17, 10]
