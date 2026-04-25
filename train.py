@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
 from torch.utils.data import DataLoader, Subset
 
 from dataloader import create_data_loaders
@@ -45,10 +45,15 @@ class TrainConfig:
     output_dir: str = "outputs/train"                           # directory for logs and checkpoints
     epochs: int = 50                                            # training epochs
     batch_size: int = 64                                        # batch size
-    lr: float = 1e-4                                            # learning rate
-    weight_decay: float = 5e-5                                  # weight decay
-    lambda_bone: float = 0.2                                    # bone loss weight
+    lr: float = 2e-5                                            # initial learning rate for OneCycleLR
+    max_lr: float = 5e-4                                        # peak learning rate for OneCycleLR
+    weight_decay: float = 5e-4                                  # weight decay
     smooth_l1_beta: float = 0.1                                 # Smooth L1 loss beta
+    grad_clip_norm: float = 1.0                                 # max gradient norm
+    bone_loss_warmup_epochs: int = 10                           # warmup epochs before bone loss ramps up
+    bone_loss_final_lambda: float = 0.5                         # final bone loss weight
+    scale_norm_loss_weight: float = 0.5                         # scale-normalized pose loss weight
+    limb_vector_loss_weight: float = 0.2                        # limb vector loss weight
     num_workers: int = 0                                        # number of data loading workers
     device: str = "cuda"                                        # device to use
     seed: int = 42
@@ -93,18 +98,76 @@ def bone_length_loss(
     return F.smooth_l1_loss(pred_lengths, target_lengths, beta=beta)
 
 
+def limb_vector_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,
+    beta: float = 0.1,
+) -> torch.Tensor:
+    """Compute Smooth L1 loss between predicted and target limb vectors."""
+
+    edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
+    pred_vectors = prediction[:, edge_index[:, 1]] - prediction[:, edge_index[:, 0]]
+    target_vectors = target[:, edge_index[:, 1]] - target[:, edge_index[:, 0]]
+    return F.smooth_l1_loss(pred_vectors, target_vectors, beta=beta)
+
+
+def compute_torso_scale(target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Return torso scales derived from the right-shoulder to left-hip distance."""
+
+    return torch.linalg.vector_norm(
+        target[:, RIGHT_SHOULDER_INDEX] - target[:, LEFT_HIP_INDEX],
+        dim=-1,
+    ).clamp_min(eps)
+
+
+def scale_normalized_pose_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    beta: float = 0.1,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compute Smooth L1 loss after normalizing both poses by torso scale."""
+
+    scale = compute_torso_scale(target, eps=eps).view(-1, 1, 1)
+    return F.smooth_l1_loss(prediction / scale, target / scale, beta=beta)
+
+
+def compute_lambda_bone(epoch: int, config: TrainConfig) -> float:
+    """Linearly ramp the bone loss weight after an initial warmup period."""
+
+    if epoch <= config.bone_loss_warmup_epochs:
+        return 0.0
+    ramp_epochs = max(config.epochs - config.bone_loss_warmup_epochs, 1)
+    progress = min(
+        max(epoch - config.bone_loss_warmup_epochs, 0) / ramp_epochs,
+        1.0,
+    )
+    return config.bone_loss_final_lambda * progress
+
+
 def compute_losses(
     prediction: torch.Tensor,
     target: torch.Tensor,
     lambda_bone: float = 0.2,
     beta: float = 0.1,
+    scale_norm_loss_weight: float = 0.5,
+    limb_vector_loss_weight: float = 0.2,
 ) -> Dict[str, torch.Tensor]:
     """Return total, pose, and bone losses for one batch."""
 
     pose = F.smooth_l1_loss(prediction, target, beta=beta)                  # pose estimation loss
+    scale_norm_pose = scale_normalized_pose_loss(prediction, target, beta=beta)
     bone = bone_length_loss(prediction, target, beta=beta)                  # body constraint loss
-    total = pose + lambda_bone * bone
-    return {"loss": total, "pose_loss": pose, "bone_loss": bone}
+    limb = limb_vector_loss(prediction, target, beta=beta)
+    total = pose + scale_norm_loss_weight * scale_norm_pose + lambda_bone * bone + limb_vector_loss_weight * limb
+    return {
+        "loss": total,
+        "pose_loss": pose,
+        "scale_norm_pose_loss": scale_norm_pose,
+        "bone_loss": bone,
+        "limb_vector_loss": limb,
+    }
 
 
 def mpjpe(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -122,10 +185,7 @@ def pck(
     """Percentage of correct keypoints normalized by right-shoulder to left-hip distance."""
 
     errors = torch.linalg.vector_norm(prediction - target, dim=-1)
-    scale = torch.linalg.vector_norm(
-        target[:, RIGHT_SHOULDER_INDEX] - target[:, LEFT_HIP_INDEX],
-        dim=-1,
-    ).clamp_min(eps)
+    scale = compute_torso_scale(target, eps=eps)
     return (errors < (scale[:, None] * threshold)).float().mean()
 
 
@@ -144,13 +204,16 @@ def run_epoch(
     model: nn.Module,
     loader: Iterable[Mapping[str, torch.Tensor]],
     criterion_config: TrainConfig,
+    epoch: int,
     device: torch.device,
     optimizer: AdamW | None = None,
+    scheduler: LRScheduler | None = None,
 ) -> Dict[str, float]:
     is_training = optimizer is not None
     model.train(is_training)
     totals: Dict[str, float] = {}
     sample_count = 0
+    current_lambda_bone = compute_lambda_bone(epoch, criterion_config)
 
     for batch in loader:
         model_input, target = prepare_model_input(batch, device)    # load batch data
@@ -160,15 +223,23 @@ def run_epoch(
             losses = compute_losses(                                # loss
                 prediction,
                 target,
-                lambda_bone=criterion_config.lambda_bone,
+                lambda_bone=current_lambda_bone,
                 beta=criterion_config.smooth_l1_beta,
+                scale_norm_loss_weight=criterion_config.scale_norm_loss_weight,
+                limb_vector_loss_weight=criterion_config.limb_vector_loss_weight,
             )
             metrics = compute_metrics(prediction.detach(), target)  # evaluat the metrics
 
             if is_training:
                 optimizer.zero_grad(set_to_none=True)               # backpropagation
                 losses["loss"].backward()
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=criterion_config.grad_clip_norm,
+                )
                 optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
 
         batch_size = target.shape[0]
         sample_count += batch_size                                  # calculate the total loss
@@ -182,7 +253,7 @@ def save_checkpoint(
     path: Path,
     model: nn.Module,
     optimizer: AdamW,
-    scheduler: ReduceLROnPlateau,
+    scheduler: LRScheduler,
     epoch: int,
     best_metric: float,
     config: TrainConfig,
@@ -245,12 +316,15 @@ def run_training(config: TrainConfig) -> None:
     val_loader = maybe_subset_loader(loaders["val"], config.subset_size)    
     model = WiFlowModel().to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    scheduler = ReduceLROnPlateau(
+    scheduler = OneCycleLR(
         optimizer,
-        mode="min",
-        factor=0.5,
-        patience=3,
-        min_lr=1e-7,
+        max_lr=config.max_lr,
+        epochs=config.epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.3,
+        anneal_strategy="cos",
+        div_factor=config.max_lr / max(config.lr, 1e-8),
+        final_div_factor=1000.0,
     )
 
     # dry run, sanity check for model forward pass and output shape
@@ -270,22 +344,35 @@ def run_training(config: TrainConfig) -> None:
     log_path = output_dir / "train_log.csv"
     for epoch in range(1, config.epochs + 1):
         start_time = time.perf_counter()                                # epoch start time
-        train_metrics = run_epoch(model, train_loader, config, device, optimizer=optimizer)
-        val_metrics = run_epoch(model, val_loader, config, device)      # validation metrics
-        scheduler.step(val_metrics["mpjpe"])                            # calculate mpjpe
+        lambda_bone = compute_lambda_bone(epoch, config)
+        train_metrics = run_epoch(
+            model,
+            train_loader,
+            config,
+            epoch,
+            device,
+            optimizer=optimizer,
+            scheduler=scheduler,
+        )
+        val_metrics = run_epoch(model, val_loader, config, epoch, device)      # validation metrics
         current_lr = optimizer.param_groups[0]["lr"]                    # current learning rate
         epoch_time = time.perf_counter() - start_time                   # epoch duration
         
         row: Dict[str, float | int] = {
             "epoch": epoch,
+            "lambda_bone": lambda_bone,
             "train_loss": train_metrics["loss"],
             "train_pose_loss": train_metrics["pose_loss"],
+            "train_scale_norm_pose_loss": train_metrics["scale_norm_pose_loss"],
             "train_bone_loss": train_metrics["bone_loss"],
+            "train_limb_vector_loss": train_metrics["limb_vector_loss"],
             "train_mpjpe": train_metrics["mpjpe"],
             "train_pck_0_2": train_metrics["pck_0_2"],
             "val_loss": val_metrics["loss"],
             "val_pose_loss": val_metrics["pose_loss"],
+            "val_scale_norm_pose_loss": val_metrics["scale_norm_pose_loss"],
             "val_bone_loss": val_metrics["bone_loss"],
+            "val_limb_vector_loss": val_metrics["limb_vector_loss"],
             "val_mpjpe": val_metrics["mpjpe"],
             "val_pck_0_2": val_metrics["pck_0_2"],
             "val_pck_0_5": val_metrics["pck_0_5"],
@@ -343,10 +430,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs/train", help="Directory for logs and checkpoints.")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", type=float, default=5e-5)
-    parser.add_argument("--lambda-bone", type=float, default=0.2)
+    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--max-lr", type=float, default=5e-4)
+    parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--smooth-l1-beta", type=float, default=0.1)
+    parser.add_argument("--grad-clip-norm", type=float, default=1.0)
+    parser.add_argument("--bone-loss-warmup-epochs", type=int, default=10)
+    parser.add_argument("--bone-loss-final-lambda", type=float, default=0.5)
+    parser.add_argument("--scale-norm-loss-weight", type=float, default=0.5)
+    parser.add_argument("--limb-vector-loss-weight", type=float, default=0.2)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)

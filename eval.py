@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
-from typing import Dict, Mapping
+from typing import Any, Dict, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from dataloader import MMFiPoseDataset, denormalize_keypoints
 from models import WiFlowModel
-from train import COCO_BONE_EDGES, compute_metrics, prepare_model_input, select_device
+from train import COCO_BONE_EDGES, compute_metrics, compute_torso_scale, prepare_model_input, select_device
 
 
 def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> WiFlowModel:
@@ -71,6 +72,124 @@ def update_metric_totals(
 
 def average_metrics(totals: Mapping[str, float], sample_count: int) -> Dict[str, float]:
     return {name: value / max(sample_count, 1) for name, value in totals.items()}
+
+
+def compute_joint_errors(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Return per-sample per-joint Euclidean errors."""
+
+    return torch.linalg.vector_norm(prediction - target, dim=-1)
+
+
+def compute_joint_pck(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    threshold: float = 0.2,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Return per-sample per-joint correctness at one PCK threshold."""
+
+    errors = compute_joint_errors(prediction, target)
+    scale = compute_torso_scale(target, eps=eps).unsqueeze(-1)
+    return (errors < (scale * threshold)).float()
+
+
+def update_group_metric_totals(
+    totals: Dict[str, Dict[str, float]],
+    group_keys: Sequence[str],
+    joint_errors: torch.Tensor,
+    joint_pck: torch.Tensor,
+) -> None:
+    """Accumulate mean MPJPE and PCK@0.2 for each sample group."""
+
+    for index, group_key in enumerate(group_keys):
+        group_total = totals.setdefault(group_key, {"count": 0.0, "mpjpe": 0.0, "pck_0_2": 0.0})
+        group_total["count"] += 1.0
+        group_total["mpjpe"] += float(joint_errors[index].mean().item())
+        group_total["pck_0_2"] += float(joint_pck[index].mean().item())
+
+
+def build_group_metric_rows(
+    totals: Mapping[str, Mapping[str, float]],
+    group_label: str,
+) -> list[dict[str, float | int | str]]:
+    """Convert grouped metric totals to CSV-friendly rows."""
+
+    rows: list[dict[str, float | int | str]] = []
+    for group_name in sorted(totals):
+        group_total = totals[group_name]
+        count = int(group_total["count"])
+        rows.append(
+            {
+                group_label: group_name,
+                "sample_count": count,
+                "mpjpe": group_total["mpjpe"] / max(count, 1),
+                "pck_0_2": group_total["pck_0_2"] / max(count, 1),
+            }
+        )
+    return rows
+
+
+def build_joint_metric_rows(
+    joint_errors: Sequence[torch.Tensor],
+    joint_pck: Sequence[torch.Tensor],
+) -> list[dict[str, float | int]]:
+    """Aggregate per-joint MPJPE and PCK@0.2 across the evaluated split."""
+
+    all_joint_errors = torch.cat(list(joint_errors), dim=0)
+    all_joint_pck = torch.cat(list(joint_pck), dim=0)
+    rows: list[dict[str, float | int]] = []
+    for joint_index in range(all_joint_errors.shape[1]):
+        rows.append(
+            {
+                "joint_index": joint_index,
+                "sample_count": int(all_joint_errors.shape[0]),
+                "mpjpe": float(all_joint_errors[:, joint_index].mean().item()),
+                "pck_0_2": float(all_joint_pck[:, joint_index].mean().item()),
+            }
+        )
+    return rows
+
+
+def write_csv_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Write CSV rows with a header inferred from the first row."""
+
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def collect_metric_breakdowns(
+    model: WiFlowModel,
+    loader: DataLoader,
+    device: torch.device,
+) -> tuple[list[dict[str, float | int]], list[dict[str, float | int | str]], list[dict[str, float | int | str]]]:
+    """Collect per-joint, per-action, and per-environment metrics for one split."""
+
+    action_totals: Dict[str, Dict[str, float]] = {}
+    environment_totals: Dict[str, Dict[str, float]] = {}
+    joint_error_batches: list[torch.Tensor] = []
+    joint_pck_batches: list[torch.Tensor] = []
+
+    with torch.no_grad():
+        for batch in loader:
+            model_input, target = prepare_model_input(batch, device)
+            prediction = model(model_input)
+            joint_errors = compute_joint_errors(prediction, target).detach().cpu()
+            joint_pck = compute_joint_pck(prediction, target).detach().cpu()
+            joint_error_batches.append(joint_errors)
+            joint_pck_batches.append(joint_pck)
+            update_group_metric_totals(action_totals, batch["action"], joint_errors, joint_pck)
+            update_group_metric_totals(environment_totals, batch["environment"], joint_errors, joint_pck)
+
+    return (
+        build_joint_metric_rows(joint_error_batches, joint_pck_batches),
+        build_group_metric_rows(action_totals, "action"),
+        build_group_metric_rows(environment_totals, "environment"),
+    )
 
 
 def evaluate_model(
@@ -186,10 +305,20 @@ def main() -> None:
     for name in sorted(metrics):
         print(f"{name}: {metrics[name]:.6f}")
 
+    joint_rows, action_rows, environment_rows = collect_metric_breakdowns(
+        model,
+        test_loader,
+        device,
+    )
+    output_dir = Path(args.output_dir)
+    write_csv_rows(output_dir / "per_joint_metrics.csv", joint_rows)
+    write_csv_rows(output_dir / "per_action_metrics.csv", action_rows)
+    write_csv_rows(output_dir / "per_environment_metrics.csv", environment_rows)
+
     saved_count = save_visualizations(
         model,
         test_dataset,
-        Path(args.output_dir),
+        output_dir,
         device,
         max_visualizations=args.max_visualizations,
     )

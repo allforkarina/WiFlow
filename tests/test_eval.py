@@ -4,7 +4,18 @@ import matplotlib
 import matplotlib.pyplot as plt
 import torch
 
-from eval import average_metrics, plot_skeleton, safe_stem, update_metric_totals
+from eval import (
+    average_metrics,
+    build_group_metric_rows,
+    build_joint_metric_rows,
+    compute_joint_errors,
+    compute_joint_pck,
+    plot_skeleton,
+    safe_stem,
+    update_group_metric_totals,
+    update_metric_totals,
+    write_csv_rows,
+)
 from train import COCO_BONE_EDGES
 
 matplotlib.use("Agg")
@@ -35,3 +46,58 @@ def test_plot_skeleton_runs_on_agg_backend() -> None:
 
     assert ax.get_title() == "Skeleton"
     plt.close(fig)
+
+
+def test_compute_joint_errors_and_pck_preserve_joint_shape() -> None:
+    target = torch.zeros(2, 17, 2)
+    target[:, 6] = torch.tensor([1.0, 0.0])
+    prediction = target.clone()
+
+    joint_errors = compute_joint_errors(prediction, target)
+    joint_pck = compute_joint_pck(prediction, target)
+
+    assert joint_errors.shape == (2, 17)
+    assert joint_pck.shape == (2, 17)
+    assert torch.allclose(joint_errors, torch.zeros_like(joint_errors))
+    assert torch.allclose(joint_pck, torch.ones_like(joint_pck))
+
+
+def test_group_metric_rows_include_expected_fields() -> None:
+    joint_errors = torch.tensor([[1.0] * 17, [3.0] * 17])
+    joint_pck = torch.tensor([[1.0] * 17, [0.0] * 17])
+    totals: dict[str, dict[str, float]] = {}
+
+    update_group_metric_totals(totals, ["A01", "A01"], joint_errors, joint_pck)
+    rows = build_group_metric_rows(totals, "action")
+
+    assert rows == [
+        {
+            "action": "A01",
+            "sample_count": 2,
+            "mpjpe": 2.0,
+            "pck_0_2": 0.5,
+        }
+    ]
+
+
+def test_build_joint_metric_rows_aggregates_batches() -> None:
+    joint_errors = [torch.tensor([[1.0] * 17]), torch.tensor([[3.0] * 17])]
+    joint_pck = [torch.tensor([[1.0] * 17]), torch.tensor([[0.0] * 17])]
+
+    rows = build_joint_metric_rows(joint_errors, joint_pck)
+
+    assert len(rows) == 17
+    assert rows[0]["joint_index"] == 0
+    assert rows[0]["sample_count"] == 2
+    assert rows[0]["mpjpe"] == 2.0
+    assert rows[0]["pck_0_2"] == 0.5
+
+
+def test_write_csv_rows_writes_header_and_rows(tmp_path) -> None:
+    path = tmp_path / "metrics.csv"
+
+    write_csv_rows(path, [{"joint_index": 0, "sample_count": 2, "mpjpe": 1.0, "pck_0_2": 0.5}])
+
+    contents = path.read_text(encoding="utf-8")
+    assert "joint_index,sample_count,mpjpe,pck_0_2" in contents
+    assert "0,2,1.0,0.5" in contents

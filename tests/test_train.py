@@ -6,9 +6,12 @@ from train import (
     COCO_BONE_EDGES,
     TrainConfig,
     bone_length_loss,
+    compute_lambda_bone,
     compute_losses,
     compute_metrics,
+    limb_vector_loss,
     prepare_model_input,
+    scale_normalized_pose_loss,
 )
 
 
@@ -41,10 +44,28 @@ def test_compute_losses_returns_weighted_total() -> None:
     prediction = torch.zeros(2, 17, 2)
     target = torch.ones(2, 17, 2)
 
-    losses = compute_losses(prediction, target, lambda_bone=0.2, beta=0.1)
+    losses = compute_losses(
+        prediction,
+        target,
+        lambda_bone=0.2,
+        beta=0.1,
+        scale_norm_loss_weight=0.5,
+        limb_vector_loss_weight=0.2,
+    )
 
-    expected = losses["pose_loss"] + 0.2 * losses["bone_loss"]
-    assert set(losses) == {"loss", "pose_loss", "bone_loss"}
+    expected = (
+        losses["pose_loss"]
+        + 0.5 * losses["scale_norm_pose_loss"]
+        + 0.2 * losses["bone_loss"]
+        + 0.2 * losses["limb_vector_loss"]
+    )
+    assert set(losses) == {
+        "loss",
+        "pose_loss",
+        "scale_norm_pose_loss",
+        "bone_loss",
+        "limb_vector_loss",
+    }
     assert torch.isclose(losses["loss"], expected)
 
 
@@ -66,7 +87,38 @@ def test_train_config_uses_paper_defaults() -> None:
 
     assert config.epochs == 50
     assert config.batch_size == 64
-    assert config.lr == 1e-4
-    assert config.weight_decay == 5e-5
-    assert config.lambda_bone == 0.2
+    assert config.lr == 2e-5
+    assert config.max_lr == 5e-4
+    assert config.weight_decay == 5e-4
     assert config.smooth_l1_beta == 0.1
+    assert config.grad_clip_norm == 1.0
+    assert config.bone_loss_warmup_epochs == 10
+    assert config.bone_loss_final_lambda == 0.5
+    assert config.scale_norm_loss_weight == 0.5
+    assert config.limb_vector_loss_weight == 0.2
+
+
+def test_scale_normalized_pose_loss_is_zero_for_matching_predictions() -> None:
+    target = torch.randn(2, 17, 2)
+
+    loss = scale_normalized_pose_loss(target, target)
+
+    assert torch.isclose(loss, torch.tensor(0.0))
+
+
+def test_limb_vector_loss_is_zero_for_matching_skeletons() -> None:
+    target = torch.randn(2, 17, 2)
+
+    loss = limb_vector_loss(target, target)
+
+    assert torch.isclose(loss, torch.tensor(0.0))
+
+
+def test_compute_lambda_bone_warms_up_then_reaches_final_value() -> None:
+    config = TrainConfig(dataset_root="data/mmfi_pose.h5", epochs=50)
+
+    assert compute_lambda_bone(1, config) == 0.0
+    assert compute_lambda_bone(10, config) == 0.0
+    assert compute_lambda_bone(11, config) > 0.0
+    assert compute_lambda_bone(25, config) > compute_lambda_bone(11, config)
+    assert compute_lambda_bone(50, config) == config.bone_loss_final_lambda

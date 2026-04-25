@@ -49,6 +49,8 @@ Run the default training configuration:
 python train.py --dataset-root data\mmfi_pose.h5 --epochs 50 --batch-size 64 --output-dir outputs\train
 ```
 
+The default training configuration uses `OneCycleLR`, gradient clipping, a staged bone-loss curriculum, and stronger AdamW weight decay than the original baseline.
+
 Evaluate one checkpoint:
 
 ```powershell
