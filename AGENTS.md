@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
-- `models/`: PyTorch model code, including the full WiFlow model, structured CSI CNN encoder, temporal-attention decoder, channel projection, asymmetric CNN, and axial attention stages.
+- `models/`: PyTorch model code, including the full WiFlow model, structured CSI CNN encoder, joint-aware temporal-attention decoder, asymmetric CNN, and axial attention stages.
 - `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
 - `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.

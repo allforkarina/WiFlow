@@ -25,7 +25,7 @@ class TemporalAttentionPooling(nn.Module):
 
 
 class WiFlowDecoder(nn.Module):
-    """Lightweight decoder that maps [B, 64, 17, 10] to [B, 17, 2]."""
+    """Joint-aware decoder that maps [B, 64, 17, 10] to [B, 17, 2]."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -40,16 +40,17 @@ class WiFlowDecoder(nn.Module):
             nn.BatchNorm2d(32),
             nn.SiLU(inplace=True),
         )
-        self.coordinate_projection = nn.Conv2d(                 # 32 channels -> 2 channels (x, y coordinates)
-            in_channels=32,
-            out_channels=2,
-            kernel_size=1,
-        )
         self.temporal_pool = TemporalAttentionPooling(channels=32)
+        self.joint_embedding = nn.Parameter(torch.zeros(17, 32))
+        self.coordinate_head = nn.Sequential(
+            nn.Linear(32, 32),
+            nn.SiLU(inplace=True),
+            nn.Linear(32, 2),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.refinement(x)
         x = self.temporal_pool(x)
-        x = self.coordinate_projection(x)
-        x = x.squeeze(-1)
-        return x.transpose(1, 2)
+        x = x.squeeze(-1).transpose(1, 2)
+        x = x + self.joint_embedding.unsqueeze(0)
+        return self.coordinate_head(x)

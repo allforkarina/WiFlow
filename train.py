@@ -37,6 +37,41 @@ COCO_BONE_EDGES: tuple[tuple[int, int], ...] = (
 PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)   # PCK Threshold
 RIGHT_SHOULDER_INDEX = 6                                        # right shoulder keypoint indice
 LEFT_HIP_INDEX = 11                                             # left hip keypoint indice
+JOINT_LOSS_WEIGHTS: tuple[float, ...] = (
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.25,
+    1.25,
+    2.0,
+    2.0,
+    3.0,
+    3.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+)
+LIMB_VECTOR_LOSS_WEIGHTS: tuple[float, ...] = (
+    1.0,
+    1.0,
+    1.0,
+    2.0,
+    3.0,
+    2.0,
+    3.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +147,37 @@ def limb_vector_loss(
     return F.smooth_l1_loss(pred_vectors, target_vectors, beta=beta)
 
 
+def get_joint_loss_weights(device: torch.device) -> torch.Tensor:
+    """Return per-joint loss weights on the requested device."""
+
+    return torch.as_tensor(JOINT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
+
+
+def get_limb_vector_loss_weights(device: torch.device) -> torch.Tensor:
+    """Return per-edge limb loss weights on the requested device."""
+
+    return torch.as_tensor(LIMB_VECTOR_LOSS_WEIGHTS, dtype=torch.float32, device=device)
+
+
+def weighted_mean(losses: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """Return the weighted average for a batch of per-item losses."""
+
+    normalized_weights = weights / weights.sum()
+    return (losses * normalized_weights.view(1, -1)).sum(dim=-1).mean()
+
+
+def joint_weighted_pose_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    beta: float = 0.1,
+) -> torch.Tensor:
+    """Compute pose loss with higher weights on hard upper-limb joints."""
+
+    per_coordinate = F.smooth_l1_loss(prediction, target, beta=beta, reduction="none")
+    per_joint = per_coordinate.mean(dim=-1)
+    return weighted_mean(per_joint, get_joint_loss_weights(prediction.device))
+
+
 def compute_torso_scale(target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """Return torso scales derived from the right-shoulder to left-hip distance."""
 
@@ -131,6 +197,25 @@ def scale_normalized_pose_loss(
 
     scale = compute_torso_scale(target, eps=eps).view(-1, 1, 1)
     return F.smooth_l1_loss(prediction / scale, target / scale, beta=beta)
+
+
+def joint_weighted_scale_normalized_pose_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    beta: float = 0.1,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compute scale-normalized pose loss with higher weights on hard upper-limb joints."""
+
+    scale = compute_torso_scale(target, eps=eps).view(-1, 1, 1)
+    per_coordinate = F.smooth_l1_loss(
+        prediction / scale,
+        target / scale,
+        beta=beta,
+        reduction="none",
+    )
+    per_joint = per_coordinate.mean(dim=-1)
+    return weighted_mean(per_joint, get_joint_loss_weights(prediction.device))
 
 
 def compute_lambda_bone(epoch: int, config: TrainConfig) -> float:
@@ -156,10 +241,10 @@ def compute_losses(
 ) -> Dict[str, torch.Tensor]:
     """Return total, pose, and bone losses for one batch."""
 
-    pose = F.smooth_l1_loss(prediction, target, beta=beta)                  # pose estimation loss
-    scale_norm_pose = scale_normalized_pose_loss(prediction, target, beta=beta)
+    pose = joint_weighted_pose_loss(prediction, target, beta=beta)          # pose estimation loss
+    scale_norm_pose = joint_weighted_scale_normalized_pose_loss(prediction, target, beta=beta)
     bone = bone_length_loss(prediction, target, beta=beta)                  # body constraint loss
-    limb = limb_vector_loss(prediction, target, beta=beta)
+    limb = weighted_limb_vector_loss(prediction, target, beta=beta)
     total = pose + scale_norm_loss_weight * scale_norm_pose + lambda_bone * bone + limb_vector_loss_weight * limb
     return {
         "loss": total,
@@ -168,6 +253,22 @@ def compute_losses(
         "bone_loss": bone,
         "limb_vector_loss": limb,
     }
+
+
+def weighted_limb_vector_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,
+    beta: float = 0.1,
+) -> torch.Tensor:
+    """Compute limb vector loss with higher weights on upper-arm and forearm edges."""
+
+    edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
+    pred_vectors = prediction[:, edge_index[:, 1]] - prediction[:, edge_index[:, 0]]
+    target_vectors = target[:, edge_index[:, 1]] - target[:, edge_index[:, 0]]
+    per_coordinate = F.smooth_l1_loss(pred_vectors, target_vectors, beta=beta, reduction="none")
+    per_edge = per_coordinate.mean(dim=-1)
+    return weighted_mean(per_edge, get_limb_vector_loss_weights(prediction.device))
 
 
 def mpjpe(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:

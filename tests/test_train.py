@@ -4,14 +4,19 @@ import torch
 
 from train import (
     COCO_BONE_EDGES,
+    JOINT_LOSS_WEIGHTS,
+    LIMB_VECTOR_LOSS_WEIGHTS,
     TrainConfig,
     bone_length_loss,
     compute_lambda_bone,
     compute_losses,
     compute_metrics,
+    joint_weighted_pose_loss,
+    joint_weighted_scale_normalized_pose_loss,
     limb_vector_loss,
     prepare_model_input,
     scale_normalized_pose_loss,
+    weighted_limb_vector_loss,
 )
 
 
@@ -106,10 +111,34 @@ def test_scale_normalized_pose_loss_is_zero_for_matching_predictions() -> None:
     assert torch.isclose(loss, torch.tensor(0.0))
 
 
+def test_joint_weighted_pose_loss_is_zero_for_matching_predictions() -> None:
+    target = torch.randn(2, 17, 2)
+
+    loss = joint_weighted_pose_loss(target, target)
+
+    assert torch.isclose(loss, torch.tensor(0.0))
+
+
+def test_joint_weighted_scale_normalized_pose_loss_is_zero_for_matching_predictions() -> None:
+    target = torch.randn(2, 17, 2)
+
+    loss = joint_weighted_scale_normalized_pose_loss(target, target)
+
+    assert torch.isclose(loss, torch.tensor(0.0))
+
+
 def test_limb_vector_loss_is_zero_for_matching_skeletons() -> None:
     target = torch.randn(2, 17, 2)
 
     loss = limb_vector_loss(target, target)
+
+    assert torch.isclose(loss, torch.tensor(0.0))
+
+
+def test_weighted_limb_vector_loss_is_zero_for_matching_skeletons() -> None:
+    target = torch.randn(2, 17, 2)
+
+    loss = weighted_limb_vector_loss(target, target)
 
     assert torch.isclose(loss, torch.tensor(0.0))
 
@@ -122,3 +151,10 @@ def test_compute_lambda_bone_warms_up_then_reaches_final_value() -> None:
     assert compute_lambda_bone(11, config) > 0.0
     assert compute_lambda_bone(25, config) > compute_lambda_bone(11, config)
     assert compute_lambda_bone(50, config) == config.bone_loss_final_lambda
+
+
+def test_joint_and_limb_weight_constants_emphasize_upper_limbs() -> None:
+    assert JOINT_LOSS_WEIGHTS[9] > JOINT_LOSS_WEIGHTS[7] > JOINT_LOSS_WEIGHTS[0]
+    assert JOINT_LOSS_WEIGHTS[10] > JOINT_LOSS_WEIGHTS[8] > JOINT_LOSS_WEIGHTS[0]
+    assert LIMB_VECTOR_LOSS_WEIGHTS[4] > LIMB_VECTOR_LOSS_WEIGHTS[3] > LIMB_VECTOR_LOSS_WEIGHTS[0]
+    assert LIMB_VECTOR_LOSS_WEIGHTS[6] > LIMB_VECTOR_LOSS_WEIGHTS[5] > LIMB_VECTOR_LOSS_WEIGHTS[0]

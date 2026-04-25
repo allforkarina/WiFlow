@@ -33,15 +33,19 @@ def test_wiflow_decoder_configuration() -> None:
     assert decoder.refinement[0].kernel_size == (3, 3)
     assert isinstance(decoder.refinement[1], nn.BatchNorm2d)
     assert isinstance(decoder.refinement[2], nn.SiLU)
-    assert isinstance(decoder.coordinate_projection, nn.Conv2d)
-    assert decoder.coordinate_projection.in_channels == 32
-    assert decoder.coordinate_projection.out_channels == 2
-    assert decoder.coordinate_projection.kernel_size == (1, 1)
     assert isinstance(decoder.temporal_pool, TemporalAttentionPooling)
     assert isinstance(decoder.temporal_pool.attention_logits, nn.Conv2d)
     assert decoder.temporal_pool.attention_logits.in_channels == 32
     assert decoder.temporal_pool.attention_logits.out_channels == 1
     assert decoder.temporal_pool.attention_logits.kernel_size == (1, 1)
+    assert decoder.joint_embedding.shape == (17, 32)
+    assert isinstance(decoder.coordinate_head[0], nn.Linear)
+    assert decoder.coordinate_head[0].in_features == 32
+    assert decoder.coordinate_head[0].out_features == 32
+    assert isinstance(decoder.coordinate_head[1], nn.SiLU)
+    assert isinstance(decoder.coordinate_head[2], nn.Linear)
+    assert decoder.coordinate_head[2].in_features == 32
+    assert decoder.coordinate_head[2].out_features == 2
 
 
 def test_temporal_attention_pooling_weights_sum_to_one() -> None:
@@ -62,7 +66,7 @@ def test_wiflow_decoder_uses_no_adaptive_average_pooling() -> None:
     assert not any(isinstance(module, nn.AdaptiveAvgPool2d) for module in decoder.modules())
 
 
-def test_wiflow_decoder_uses_no_linear_layer() -> None:
+def test_wiflow_decoder_uses_joint_aware_linear_head() -> None:
     decoder = WiFlowDecoder()
 
-    assert not any(isinstance(module, nn.Linear) for module in decoder.modules())
+    assert any(isinstance(module, nn.Linear) for module in decoder.coordinate_head)
