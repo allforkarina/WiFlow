@@ -58,7 +58,7 @@ class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
         self.input_temporal = 10
         self.input_spatial = 114
         self.stem_channels = 16                         # [B, 16, 10, 114]
-        self.stem = nn.Sequential(
+        self.stem = nn.Sequential(                      # 3 -> 16 channels
             nn.Conv2d(
                 in_channels=self.input_channels,
                 out_channels=self.stem_channels,
