@@ -17,6 +17,7 @@ def test_wiflow_encoder_tcn_layer1_preserves_shape() -> None:
 def test_wiflow_encoder_tcn_layer1_is_causal() -> None:
     torch.manual_seed(0)
     layer = WiFlowEncoderTCNLayer1()
+    layer.eval()
     x_past = torch.randn(2, 342, 10)
     x_future_changed = x_past.clone()
     x_future_changed[:, :, 6:] = torch.randn(2, 342, 4)
@@ -43,7 +44,8 @@ def test_wiflow_encoder_tcn_layer1_configuration() -> None:
     assert layer.temporal_channels == 342
     assert layer.out_channels == 340
     assert layer.kernel_size == 3
-    assert layer.dilation == 1
-    assert layer.channel_projection.in_channels == 342
-    assert layer.channel_projection.out_channels == 340
-    assert layer.channel_projection.kernel_size == (1,)
+    assert layer.dilations == (1, 2, 4, 8)
+    assert len(layer.blocks) == 4
+    assert [block.dilation for block in layer.blocks] == [1, 2, 4, 8]
+    assert layer.blocks[-1].temporal_conv.in_channels == 342
+    assert layer.blocks[-1].temporal_conv.out_channels == 340
