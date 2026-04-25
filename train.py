@@ -333,7 +333,7 @@ def run_training(config: TrainConfig) -> None:
             f"train_loss={train_metrics['loss']:.6f} "
             f"val_mpjpe={val_metrics['mpjpe']:.6f} "
             f"val_pck_0_2={val_metrics['pck_0_2']:.6f} "
-            f"lr={current_lr:.2e}"
+            f"lr={current_lr:.2e} "
             f"epoch_time={epoch_time:.1f}s"
         )
 
