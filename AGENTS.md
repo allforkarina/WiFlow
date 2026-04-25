@@ -5,6 +5,7 @@
 - `models/`: PyTorch model code, including the full WiFlow model, encoder, decoder, temporal, channel projection, asymmetric CNN, and axial attention stages.
 - `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.
 - `tests/`: `pytest` unit tests. Mirror module names such as `tests/test_dataloader.py`, `tests/test_wiflow_model.py`, or `tests/test_wiflow_decoder.py`.
+- `.gitignore`: Excludes Python caches, local environments, generated datasets, checkpoints, and editor files from Git.
 
 Generated datasets can be large and should not be committed. Keep raw dataset roots outside the repository.
 
@@ -38,7 +39,7 @@ pytest
 Use Python 3.10+ syntax, type hints, and `pathlib.Path` for paths. Group imports as standard library, third-party, then local. Follow existing naming: `snake_case` functions/variables, `PascalCase` classes, and uppercase constants such as `SPLIT_NAMES`. Use 4-space indentation. Keep comments focused on dataset assumptions, shapes, and normalization.
 
 ## Testing Guidelines
-No automated tests are checked in. Add `pytest` tests for split generation, path validation, shape validation, normalization edge cases, and HDF5 round-tripping. Name files `test_*.py` and tests `test_<behavior>()`. Use temporary directories and tiny synthetic fixtures.
+Automated tests use `pytest`. Add tests for split generation, path validation, shape validation, normalization edge cases, model shape contracts, and HDF5 round-tripping. Name files `test_*.py` and tests `test_<behavior>()`. Use temporary directories and tiny synthetic fixtures.
 
 ## Commit & Pull Request Guidelines
 This checkout has no `.git` history, so no convention can be inferred. Use concise imperative commits, for example `Add HDF5 split preview`. Pull requests should include a summary, commands run, dataset assumptions, and relevant shape or frame-count output. Do not commit generated datasets, virtual environments, or machine-specific paths.
@@ -50,6 +51,8 @@ Do not hard-code private dataset locations beyond documented defaults. Pass data
 Write repository-facing agent notes, documentation, and code comments in English. Keep comments neatly aligned with surrounding style. Use Chinese for conversational replies unless the user requests another language.
 
 Whenever project code changes, update this `AGENTS.md` file in the same turn if the change affects commands, structure, conventions, testing, configuration, or agent workflow.
+
+After each project modification, commit the change and push it to the configured GitHub remote in the same turn unless the user explicitly asks not to push.
 
 Before changing code, apply the `karpathy-guidelines` skill: state assumptions when needed, prefer the smallest working change, avoid unrelated refactors, and verify the result with a concrete check.
 
