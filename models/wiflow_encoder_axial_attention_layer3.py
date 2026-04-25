@@ -9,8 +9,8 @@ class WiFlowEncoderAxialAttentionLayer3(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.channels = 64
-        self.num_heads = 8
+        self.channels = 64  # [B, 64, 10, 17] -> batch_size, channel, temporal, spatial
+        self.num_heads = 8  # [B, 8, 10, 17]
 
         # [B, 64, 17, 10] -> [B x 10, 64, 17], extract the keypoints' features in the same time shot
         self.temporal_attention = nn.MultiheadAttention(
