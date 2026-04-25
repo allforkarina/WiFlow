@@ -14,8 +14,8 @@ class CausalTCNBlock(nn.Module):
         self.dilation = dilation                                            # dilation factor
         self.left_padding = (self.kernel_size - 1) * dilation               # calculate left padding to preserve sequence length
         self.temporal_conv = nn.Conv1d(
-            in_channels=in_channels,                                        # [B, 342, 10]
-            out_channels=out_channels,                                      # [B, 342, 10] for the first three blocks, [B, 340, 10] for the last block
+            in_channels=in_channels,                                        # [B, in_channels, 10]
+            out_channels=out_channels,                                      # [B, out_channels, 10]
             kernel_size=self.kernel_size,                                   # kernel size 
             dilation=dilation,                                              # dilation factor (1, 2, 4, 8)
         )
