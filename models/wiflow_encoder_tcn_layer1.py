@@ -19,14 +19,14 @@ class CausalTCNBlock(nn.Module):
             kernel_size=self.kernel_size,                                   # kernel size 
             dilation=dilation,                                              # dilation factor (1, 2, 4, 8)
         )
-        self.norm = nn.BatchNorm1d(out_channels)
-        self.activation = nn.SiLU()
+        self.norm = nn.BatchNorm1d(out_channels)                            # batch normalization
+        self.activation = nn.SiLU()                                         # activation function
         self.use_residual = in_channels == out_channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = F.pad(x, (self.left_padding, 0))
-        x = self.temporal_conv(x)
+        x = F.pad(x, (self.left_padding, 0))                                # pad for casual convolution
+        x = self.temporal_conv(x)                                           # temporal convolution
         x = self.norm(x)
         x = self.activation(x)
         if self.use_residual:
