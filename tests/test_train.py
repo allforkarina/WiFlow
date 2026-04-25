@@ -12,7 +12,7 @@ from train import (
 )
 
 
-def test_prepare_model_input_flattens_csi_amplitude() -> None:
+def test_prepare_model_input_preserves_structured_csi_amplitude() -> None:
     batch = {
         "csi_amplitude": torch.randn(2, 3, 114, 10),
         "keypoints": torch.randn(2, 17, 2),
@@ -20,7 +20,7 @@ def test_prepare_model_input_flattens_csi_amplitude() -> None:
 
     model_input, target = prepare_model_input(batch, torch.device("cpu"))
 
-    assert model_input.shape == (2, 342, 10)
+    assert model_input.shape == (2, 3, 114, 10)
     assert target.shape == (2, 17, 2)
 
 

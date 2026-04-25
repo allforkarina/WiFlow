@@ -8,7 +8,7 @@ from .wiflow_encoder import WiFlowEncoder
 
 
 class WiFlowModel(nn.Module):
-    """End-to-end WiFlow model that maps [B, 342, 10] to [B, 17, 2]."""
+    """End-to-end WiFlow model that maps [B, 3, 114, 10] to [B, 17, 2]."""
 
     def __init__(self) -> None:
         super().__init__()

@@ -119,8 +119,7 @@ def save_visualizations(
             break
 
         # sample and predict
-        csi_amplitude = torch.as_tensor(sample["csi_amplitude"], dtype=torch.float32, device=device).unsqueeze(0)
-        model_input = csi_amplitude.reshape(1, 342, 10)
+        model_input = torch.as_tensor(sample["csi_amplitude"], dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             prediction = model(model_input).detach().cpu().numpy()[0]
 
@@ -138,7 +137,8 @@ def save_visualizations(
         )
 
         fig, axes = plt.subplots(3, 1, figsize=(6, 12))
-        axes[0].imshow(model_input.detach().cpu().numpy()[0], aspect="auto", cmap="jet")
+        csi_heatmap = model_input.detach().cpu().numpy()[0].reshape(342, 10)
+        axes[0].imshow(csi_heatmap, aspect="auto", cmap="jet")
         axes[0].set_title(f"CSI Amplitude Heatmap ({action} in {environment})")
         axes[0].set_ylabel("Sub-channels (Flattened)")
         axes[0].set_xlabel("Packet Window (T=10)")

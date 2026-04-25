@@ -5,7 +5,6 @@ from torch import nn
 
 from .wiflow_encoder_asymmetric_cnn_layer2 import WiFlowEncoderAsymmetricCNNLayer2
 from .wiflow_encoder_axial_attention_layer3 import WiFlowEncoderAxialAttentionLayer3
-from .wiflow_encoder_tcn_layer1 import WiFlowEncoderTCNLayer1
 
 
 class WiFlowEncoder(nn.Module):
@@ -13,15 +12,13 @@ class WiFlowEncoder(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.layer1 = WiFlowEncoderTCNLayer1()
-        self.layer2 = WiFlowEncoderAsymmetricCNNLayer2()
+        self.layer1 = WiFlowEncoderAsymmetricCNNLayer2()
         self.layer3 = WiFlowEncoderAxialAttentionLayer3()
 
     def _prepare_axial_attention_input(self, x: torch.Tensor) -> torch.Tensor:
         return x.transpose(2, 3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.layer1(x)                                  # [B, 340, 10]
-        x = self.layer2(x)                                  # [B, 64, 10, 17]
+        x = self.layer1(x)                                  # [B, 64, 10, 17]
         x = self._prepare_axial_attention_input(x)          # [B, 64, 17, 10]
         return self.layer3(x)                               # [B, 64, 17, 10]

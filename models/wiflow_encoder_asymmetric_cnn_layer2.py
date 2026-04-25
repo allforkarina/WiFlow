@@ -50,49 +50,50 @@ class AsymmetricResidualDownsampleBlock(nn.Module):
 
 
 class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
-    """Second encoder layer that maps [B, 340, 10] to [B, 64, 10, 17]."""
+    """Structured CSI encoder that maps [B, 3, 114, 10] to [B, 64, 10, 17]."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.input_channels = 1                         # squeeze dimension [B, 1, 10, 340]
+        self.input_channels = 3                         # antenna channels
         self.input_temporal = 10
-        self.input_spatial = 340
-        self.stem_channels = 8                          # sxpand the channel dim to 8, [B, 8, 10, 340]
+        self.input_spatial = 114
+        self.stem_channels = 16                         # [B, 16, 10, 114]
         self.stem = nn.Sequential(
             nn.Conv2d(
                 in_channels=self.input_channels,
                 out_channels=self.stem_channels,
-                kernel_size=(1, 3),
+                kernel_size=(3, 5),
                 stride=(1, 1),
-                padding=(0, 1),                         # output the feature size dont change, [B, 8, 10, 340]
+                padding=(1, 2),                         # preserve temporal and subcarrier dimensions
                 bias=False,
             ),
             nn.BatchNorm2d(self.stem_channels),
             nn.ReLU(inplace=True),
         )
         self.resblock1 = AsymmetricResidualDownsampleBlock(
-            in_channels=8,
-            out_channels=16,
-            spatial_stride=2,                           # stride = 2, 340 -> 170
-        )
-        self.resblock2 = AsymmetricResidualDownsampleBlock(
             in_channels=16,
             out_channels=32,
-            spatial_stride=2,                           # stride = 2, 170 -> 85 
+            spatial_stride=2,                           # stride = 2, 114 -> 57
         )
-        self.resblock3 = AsymmetricResidualDownsampleBlock(
+        self.resblock2 = AsymmetricResidualDownsampleBlock(
             in_channels=32,
             out_channels=64,
-            spatial_stride=5,                           # stride = 5, 85 -> 17, match the keypoints' num
+            spatial_stride=2,                           # stride = 2, 57 -> 29
         )
+        self.resblock3 = AsymmetricResidualDownsampleBlock(
+            in_channels=64,
+            out_channels=64,
+            spatial_stride=1,                           # refine structured CSI features
+        )
+        self.spatial_pool = nn.AdaptiveAvgPool2d((10, 17))
 
     def _reshape_input(self, x: torch.Tensor) -> torch.Tensor:
-        return x.transpose(1, 2).unsqueeze(1)           # reshape from [B, 340, 10] to [B, 1, 10, 340]
+        return x.permute(0, 1, 3, 2)                   # [B, 3, 114, 10] -> [B, 3, 10, 114]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._reshape_input(x)
-        x = self.stem(x)                                # [B, 8, 10, 340]
-        x = self.resblock1(x)                           # [B, 16, 10, 170]
-        x = self.resblock2(x)                           # [B, 32, 10, 85]
-        x = self.resblock3(x)                           # [B, 64, 10, 17]
-        return x
+        x = self.stem(x)                                # [B, 16, 10, 114]
+        x = self.resblock1(x)                           # [B, 32, 10, 57]
+        x = self.resblock2(x)                           # [B, 64, 10, 29]
+        x = self.resblock3(x)                           # [B, 64, 10, 29]
+        return self.spatial_pool(x)                     # [B, 64, 10, 17]

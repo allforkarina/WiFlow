@@ -7,7 +7,7 @@ from models import WiFlowDecoder, WiFlowEncoder, WiFlowModel
 
 def test_wiflow_model_output_shape() -> None:
     model = WiFlowModel()
-    x = torch.randn(4, 342, 10)
+    x = torch.randn(4, 3, 114, 10)
 
     y = model(x)
 
@@ -16,7 +16,7 @@ def test_wiflow_model_output_shape() -> None:
 
 def test_wiflow_model_supports_single_item_batch() -> None:
     model = WiFlowModel()
-    x = torch.randn(1, 342, 10)
+    x = torch.randn(1, 3, 114, 10)
 
     y = model(x)
 

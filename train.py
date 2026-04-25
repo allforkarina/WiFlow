@@ -56,7 +56,7 @@ class TrainConfig:
 
 
 def prepare_model_input(batch: Mapping[str, torch.Tensor], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert one dataloader batch to model input [B, 342, 10] and labels [B, 17, 2]."""
+    """Convert one dataloader batch to model input [B, 3, 114, 10] and labels [B, 17, 2]."""
 
     csi_amplitude = torch.as_tensor(batch["csi_amplitude"], dtype=torch.float32, device=device)
     keypoints = torch.as_tensor(batch["keypoints"], dtype=torch.float32, device=device)
@@ -66,8 +66,7 @@ def prepare_model_input(batch: Mapping[str, torch.Tensor], device: torch.device)
     if keypoints.ndim != 3 or keypoints.shape[1:] != (17, 2):
         raise ValueError(f"Expected keypoints shape [B, 17, 2], got {tuple(keypoints.shape)}")
 
-    model_input = csi_amplitude.reshape(csi_amplitude.shape[0], 342, 10)    # reshape 3 x 114 -> 342, [B, 342, 10]
-    return model_input, keypoints                                           # [B, 342, 10], [B, 17, 2]
+    return csi_amplitude, keypoints                                         # [B, 3, 114, 10], [B, 17, 2]
 
 
 def bone_length_loss(
