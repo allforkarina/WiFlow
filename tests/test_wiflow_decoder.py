@@ -39,13 +39,17 @@ def test_wiflow_decoder_configuration() -> None:
     assert decoder.temporal_pool.attention_logits.out_channels == 1
     assert decoder.temporal_pool.attention_logits.kernel_size == (1, 1)
     assert decoder.joint_embedding.shape == (17, 32)
-    assert isinstance(decoder.coordinate_head[0], nn.Linear)
-    assert decoder.coordinate_head[0].in_features == 32
-    assert decoder.coordinate_head[0].out_features == 32
-    assert isinstance(decoder.coordinate_head[1], nn.SiLU)
-    assert isinstance(decoder.coordinate_head[2], nn.Linear)
-    assert decoder.coordinate_head[2].in_features == 32
-    assert decoder.coordinate_head[2].out_features == 2
+    assert isinstance(decoder.x_head[0], nn.Linear)
+    assert decoder.x_head[0].in_features == 32
+    assert decoder.x_head[0].out_features == 32
+    assert isinstance(decoder.x_head[1], nn.SiLU)
+    assert isinstance(decoder.x_head[2], nn.Linear)
+    assert decoder.x_head[2].in_features == 32
+    assert decoder.x_head[2].out_features == 128
+    assert isinstance(decoder.y_head[0], nn.Linear)
+    assert decoder.y_head[2].out_features == 128
+    assert decoder.x_bin_centers.shape == (128,)
+    assert decoder.y_bin_centers.shape == (128,)
 
 
 def test_temporal_attention_pooling_weights_sum_to_one() -> None:
@@ -69,4 +73,29 @@ def test_wiflow_decoder_uses_no_adaptive_average_pooling() -> None:
 def test_wiflow_decoder_uses_joint_aware_linear_head() -> None:
     decoder = WiFlowDecoder()
 
-    assert any(isinstance(module, nn.Linear) for module in decoder.coordinate_head)
+    assert any(isinstance(module, nn.Linear) for module in decoder.x_head)
+    assert any(isinstance(module, nn.Linear) for module in decoder.y_head)
+
+
+def test_wiflow_decoder_forward_with_logits_returns_distribution_shapes() -> None:
+    decoder = WiFlowDecoder()
+    x = torch.randn(2, 64, 17, 10)
+
+    prediction, x_logits, y_logits = decoder.forward_with_logits(x)
+
+    assert prediction.shape == (2, 17, 2)
+    assert x_logits.shape == (2, 17, 128)
+    assert y_logits.shape == (2, 17, 128)
+
+
+def test_decode_coordinate_distribution_matches_peaked_logits() -> None:
+    decoder = WiFlowDecoder(num_x_bins=8, num_y_bins=8)
+    x_logits = torch.full((1, 17, 8), -20.0)
+    y_logits = torch.full((1, 17, 8), -20.0)
+    x_logits[..., 3] = 20.0
+    y_logits[..., 5] = 20.0
+
+    prediction = decoder.decode_coordinate_distribution(x_logits, y_logits)
+
+    assert torch.allclose(prediction[..., 0], torch.full((1, 17), 3.0 / 7.0), atol=1e-4)
+    assert torch.allclose(prediction[..., 1], torch.full((1, 17), 5.0 / 7.0), atol=1e-4)

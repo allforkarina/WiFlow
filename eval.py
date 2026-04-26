@@ -23,7 +23,11 @@ def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> 
     if "model_state_dict" not in checkpoint:
         raise KeyError(f"Checkpoint is missing model_state_dict: {checkpoint_path}")
 
-    model = WiFlowModel().to(device)                                # load the model
+    train_config = checkpoint.get("train_config", {})
+    num_x_bins = int(train_config.get("num_x_bins", 128))
+    num_y_bins = int(train_config.get("num_y_bins", 128))
+
+    model = WiFlowModel(num_x_bins=num_x_bins, num_y_bins=num_y_bins).to(device)  # load the model
     model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
     model.eval()                                                    # eval mode
     return model

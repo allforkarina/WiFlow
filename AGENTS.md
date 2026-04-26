@@ -2,8 +2,8 @@
 
 ## Project Structure & Module Organization
 - `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
-- `models/`: PyTorch model code, including the full WiFlow model, structured CSI CNN encoder, joint-aware temporal-attention decoder, asymmetric CNN, and axial attention stages.
-- `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
+- `models/`: PyTorch model code, including the full WiFlow model, structured CSI CNN encoder, joint-aware temporal-attention decoder with coordinate-distribution heads, asymmetric CNN, and axial attention stages.
+- `train.py`: Root-level training entrypoint for WiFlow pose regression, including coordinate-distribution supervision, losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
 - `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.
 - `tests/`: `pytest` unit tests. Mirror module names such as `tests/test_dataloader.py`, `tests/test_wiflow_model.py`, or `tests/test_wiflow_decoder.py`.
@@ -49,13 +49,15 @@ Run the default training configuration:
 python train.py --dataset-root data\mmfi_pose.h5 --epochs 50 --batch-size 64 --output-dir outputs\train
 ```
 
-The default training configuration uses `OneCycleLR`, gradient clipping, a staged bone-loss curriculum, and stronger AdamW weight decay than the original baseline.
+The default training configuration uses `OneCycleLR`, gradient clipping, a staged bone-loss curriculum, coordinate-distribution supervision for each joint axis, and stronger AdamW weight decay than the original baseline.
 
 Evaluate one checkpoint:
 
 ```powershell
 python eval.py --dataset-root data\mmfi_pose.h5 --checkpoint outputs\train\best_val_mpjpe.pth --output-dir outputs\eval
 ```
+
+Evaluation reconstructs the decoder bin configuration from the checkpoint training config, so custom `--num-x-bins` and `--num-y-bins` values remain compatible at test time.
 
 ## Coding Style & Naming Conventions
 Use Python 3.10+ syntax, type hints, and `pathlib.Path` for paths. Group imports as standard library, third-party, then local. Follow existing naming: `snake_case` functions/variables, `PascalCase` classes, and uppercase constants such as `SPLIT_NAMES`. Use 4-space indentation. Keep comments focused on dataset assumptions, shapes, and normalization.

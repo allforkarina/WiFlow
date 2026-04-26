@@ -8,6 +8,8 @@ from train import (
     LIMB_VECTOR_LOSS_WEIGHTS,
     TrainConfig,
     bone_length_loss,
+    build_coordinate_soft_labels,
+    coordinate_distribution_loss,
     compute_lambda_bone,
     compute_losses,
     compute_metrics,
@@ -48,24 +50,32 @@ def test_bone_length_loss_is_zero_for_matching_skeletons() -> None:
 def test_compute_losses_returns_weighted_total() -> None:
     prediction = torch.zeros(2, 17, 2)
     target = torch.ones(2, 17, 2)
+    x_logits = torch.zeros(2, 17, 128)
+    y_logits = torch.zeros(2, 17, 128)
 
     losses = compute_losses(
         prediction,
         target,
+        x_logits,
+        y_logits,
         lambda_bone=0.2,
         beta=0.1,
-        scale_norm_loss_weight=0.5,
-        limb_vector_loss_weight=0.2,
+        scale_norm_loss_weight=0.25,
+        limb_vector_loss_weight=0.1,
+        coord_label_sigma_bins=2.0,
+        coord_aux_regression_weight=0.1,
     )
 
     expected = (
-        losses["pose_loss"]
-        + 0.5 * losses["scale_norm_pose_loss"]
+        losses["coord_dist_loss"]
+        + 0.1 * losses["pose_loss"]
+        + 0.25 * losses["scale_norm_pose_loss"]
         + 0.2 * losses["bone_loss"]
-        + 0.2 * losses["limb_vector_loss"]
+        + 0.1 * losses["limb_vector_loss"]
     )
     assert set(losses) == {
         "loss",
+        "coord_dist_loss",
         "pose_loss",
         "scale_norm_pose_loss",
         "bone_loss",
@@ -99,8 +109,12 @@ def test_train_config_uses_paper_defaults() -> None:
     assert config.grad_clip_norm == 1.0
     assert config.bone_loss_warmup_epochs == 10
     assert config.bone_loss_final_lambda == 0.5
-    assert config.scale_norm_loss_weight == 0.5
-    assert config.limb_vector_loss_weight == 0.2
+    assert config.scale_norm_loss_weight == 0.25
+    assert config.limb_vector_loss_weight == 0.1
+    assert config.num_x_bins == 128
+    assert config.num_y_bins == 128
+    assert config.coord_label_sigma_bins == 2.0
+    assert config.coord_aux_regression_weight == 0.1
 
 
 def test_scale_normalized_pose_loss_is_zero_for_matching_predictions() -> None:
@@ -158,3 +172,22 @@ def test_joint_and_limb_weight_constants_emphasize_upper_limbs() -> None:
     assert JOINT_LOSS_WEIGHTS[10] > JOINT_LOSS_WEIGHTS[8] > JOINT_LOSS_WEIGHTS[0]
     assert LIMB_VECTOR_LOSS_WEIGHTS[4] > LIMB_VECTOR_LOSS_WEIGHTS[3] > LIMB_VECTOR_LOSS_WEIGHTS[0]
     assert LIMB_VECTOR_LOSS_WEIGHTS[6] > LIMB_VECTOR_LOSS_WEIGHTS[5] > LIMB_VECTOR_LOSS_WEIGHTS[0]
+
+
+def test_build_coordinate_soft_labels_normalizes_each_distribution() -> None:
+    target_coordinate = torch.tensor([[0.0, 0.5, 1.0]])
+
+    labels = build_coordinate_soft_labels(target_coordinate, num_bins=8, sigma_bins=2.0)
+
+    assert labels.shape == (1, 3, 8)
+    assert torch.allclose(labels.sum(dim=-1), torch.ones(1, 3))
+
+
+def test_coordinate_distribution_loss_is_low_for_matching_soft_labels() -> None:
+    target_coordinate = torch.tensor([[0.25]])
+    target_distribution = build_coordinate_soft_labels(target_coordinate, num_bins=8, sigma_bins=1.5)
+    logits = torch.log(target_distribution)
+
+    loss = coordinate_distribution_loss(logits, target_distribution)
+
+    assert loss < 3.0
