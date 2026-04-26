@@ -87,12 +87,8 @@ class TrainConfig:
     grad_clip_norm: float = 1.0                                 # max gradient norm
     bone_loss_warmup_epochs: int = 10                           # warmup epochs before bone loss ramps up
     bone_loss_final_lambda: float = 0.5                         # final bone loss weight
-    scale_norm_loss_weight: float = 0.25                        # scale-normalized pose loss weight
-    limb_vector_loss_weight: float = 0.1                        # limb vector loss weight
-    num_x_bins: int = 128                                       # discrete bins for x-coordinate distribution
-    num_y_bins: int = 128                                       # discrete bins for y-coordinate distribution
-    coord_label_sigma_bins: float = 2.0                         # Gaussian soft-label width in bin units
-    coord_aux_regression_weight: float = 0.1                    # auxiliary coordinate regression weight
+    scale_norm_loss_weight: float = 0.5                         # scale-normalized pose loss weight
+    limb_vector_loss_weight: float = 0.2                        # limb vector loss weight
     num_workers: int = 0                                        # number of data loading workers
     device: str = "cuda"                                        # device to use
     seed: int = 42
@@ -222,33 +218,6 @@ def joint_weighted_scale_normalized_pose_loss(
     return weighted_mean(per_joint, get_joint_loss_weights(prediction.device))
 
 
-def build_coordinate_soft_labels(
-    target_coordinate: torch.Tensor,
-    num_bins: int,
-    sigma_bins: float,
-) -> torch.Tensor:
-    """Build Gaussian-smoothed 1D coordinate labels over discrete bins."""
-
-    clamped_target = target_coordinate.clamp(0.0, 1.0)
-    target_bins = clamped_target * max(num_bins - 1, 1)
-    bin_positions = torch.arange(num_bins, dtype=target_coordinate.dtype, device=target_coordinate.device)
-    scaled_distance = (bin_positions.view(1, 1, -1) - target_bins.unsqueeze(-1)) / max(sigma_bins, 1e-6)
-    return torch.softmax(-0.5 * scaled_distance.square(), dim=-1)
-
-
-def coordinate_distribution_loss(
-    logits: torch.Tensor,
-    target_distribution: torch.Tensor,
-    joint_weights: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Compute soft cross-entropy between predicted and target coordinate distributions."""
-
-    per_joint = -(target_distribution * F.log_softmax(logits, dim=-1)).sum(dim=-1)
-    if joint_weights is None:
-        return per_joint.mean()
-    return weighted_mean(per_joint, joint_weights)
-
-
 def compute_lambda_bone(epoch: int, config: TrainConfig) -> float:
     """Linearly ramp the bone loss weight after an initial warmup period."""
 
@@ -265,45 +234,20 @@ def compute_lambda_bone(epoch: int, config: TrainConfig) -> float:
 def compute_losses(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    x_logits: torch.Tensor,
-    y_logits: torch.Tensor,
     lambda_bone: float = 0.2,
     beta: float = 0.1,
-    scale_norm_loss_weight: float = 0.25,
-    limb_vector_loss_weight: float = 0.1,
-    coord_label_sigma_bins: float = 2.0,
-    coord_aux_regression_weight: float = 0.1,
+    scale_norm_loss_weight: float = 0.5,
+    limb_vector_loss_weight: float = 0.2,
 ) -> Dict[str, torch.Tensor]:
-    """Return total and auxiliary losses for one batch."""
+    """Return total, pose, and bone losses for one batch."""
 
-    joint_weights = get_joint_loss_weights(prediction.device)
-    x_target_distribution = build_coordinate_soft_labels(
-        target[..., 0],
-        num_bins=x_logits.shape[-1],
-        sigma_bins=coord_label_sigma_bins,
-    )
-    y_target_distribution = build_coordinate_soft_labels(
-        target[..., 1],
-        num_bins=y_logits.shape[-1],
-        sigma_bins=coord_label_sigma_bins,
-    )
-    x_dist = coordinate_distribution_loss(x_logits, x_target_distribution, joint_weights=joint_weights)
-    y_dist = coordinate_distribution_loss(y_logits, y_target_distribution, joint_weights=joint_weights)
-    coord_dist = 0.5 * (x_dist + y_dist)
-    pose = F.smooth_l1_loss(prediction, target, beta=beta)
-    scale_norm_pose = scale_normalized_pose_loss(prediction, target, beta=beta)
+    pose = joint_weighted_pose_loss(prediction, target, beta=beta)          # pose estimation loss
+    scale_norm_pose = joint_weighted_scale_normalized_pose_loss(prediction, target, beta=beta)
     bone = bone_length_loss(prediction, target, beta=beta)                  # body constraint loss
     limb = weighted_limb_vector_loss(prediction, target, beta=beta)
-    total = (
-        coord_dist
-        + coord_aux_regression_weight * pose
-        + scale_norm_loss_weight * scale_norm_pose
-        + lambda_bone * bone
-        + limb_vector_loss_weight * limb
-    )
+    total = pose + scale_norm_loss_weight * scale_norm_pose + lambda_bone * bone + limb_vector_loss_weight * limb
     return {
         "loss": total,
-        "coord_dist_loss": coord_dist,
         "pose_loss": pose,
         "scale_norm_pose_loss": scale_norm_pose,
         "bone_loss": bone,
@@ -376,18 +320,14 @@ def run_epoch(
         model_input, target = prepare_model_input(batch, device)    # load batch data
 
         with torch.set_grad_enabled(is_training):
-            prediction, x_logits, y_logits = model.forward_with_logits(model_input)  # predict
+            prediction = model(model_input)                         # predict
             losses = compute_losses(                                # loss
                 prediction,
                 target,
-                x_logits,
-                y_logits,
                 lambda_bone=current_lambda_bone,
                 beta=criterion_config.smooth_l1_beta,
                 scale_norm_loss_weight=criterion_config.scale_norm_loss_weight,
                 limb_vector_loss_weight=criterion_config.limb_vector_loss_weight,
-                coord_label_sigma_bins=criterion_config.coord_label_sigma_bins,
-                coord_aux_regression_weight=criterion_config.coord_aux_regression_weight,
             )
             metrics = compute_metrics(prediction.detach(), target)  # evaluat the metrics
 
@@ -475,7 +415,7 @@ def run_training(config: TrainConfig) -> None:
 
     train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
     val_loader = maybe_subset_loader(loaders["val"], config.subset_size)    
-    model = WiFlowModel(num_x_bins=config.num_x_bins, num_y_bins=config.num_y_bins).to(device)
+    model = WiFlowModel().to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = OneCycleLR(
         optimizer,
@@ -523,7 +463,6 @@ def run_training(config: TrainConfig) -> None:
             "epoch": epoch,
             "lambda_bone": lambda_bone,
             "train_loss": train_metrics["loss"],
-            "train_coord_dist_loss": train_metrics["coord_dist_loss"],
             "train_pose_loss": train_metrics["pose_loss"],
             "train_scale_norm_pose_loss": train_metrics["scale_norm_pose_loss"],
             "train_bone_loss": train_metrics["bone_loss"],
@@ -531,7 +470,6 @@ def run_training(config: TrainConfig) -> None:
             "train_mpjpe": train_metrics["mpjpe"],
             "train_pck_0_2": train_metrics["pck_0_2"],
             "val_loss": val_metrics["loss"],
-            "val_coord_dist_loss": val_metrics["coord_dist_loss"],
             "val_pose_loss": val_metrics["pose_loss"],
             "val_scale_norm_pose_loss": val_metrics["scale_norm_pose_loss"],
             "val_bone_loss": val_metrics["bone_loss"],
@@ -600,12 +538,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
     parser.add_argument("--bone-loss-warmup-epochs", type=int, default=10)
     parser.add_argument("--bone-loss-final-lambda", type=float, default=0.5)
-    parser.add_argument("--scale-norm-loss-weight", type=float, default=0.25)
-    parser.add_argument("--limb-vector-loss-weight", type=float, default=0.1)
-    parser.add_argument("--num-x-bins", type=int, default=128)
-    parser.add_argument("--num-y-bins", type=int, default=128)
-    parser.add_argument("--coord-label-sigma-bins", type=float, default=2.0)
-    parser.add_argument("--coord-aux-regression-weight", type=float, default=0.1)
+    parser.add_argument("--scale-norm-loss-weight", type=float, default=0.5)
+    parser.add_argument("--limb-vector-loss-weight", type=float, default=0.2)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)

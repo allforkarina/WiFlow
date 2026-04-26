@@ -10,14 +10,12 @@ from eval import (
     build_joint_metric_rows,
     compute_joint_errors,
     compute_joint_pck,
-    load_checkpoint_model,
     plot_skeleton,
     safe_stem,
     update_group_metric_totals,
     update_metric_totals,
     write_csv_rows,
 )
-from models import WiFlowModel
 from train import COCO_BONE_EDGES
 
 matplotlib.use("Agg")
@@ -103,20 +101,3 @@ def test_write_csv_rows_writes_header_and_rows(tmp_path) -> None:
     contents = path.read_text(encoding="utf-8")
     assert "joint_index,sample_count,mpjpe,pck_0_2" in contents
     assert "0,2,1.0,0.5" in contents
-
-
-def test_load_checkpoint_model_restores_distribution_decoder_shape(tmp_path) -> None:
-    checkpoint_path = tmp_path / "model.pth"
-    model = WiFlowModel(num_x_bins=64, num_y_bins=96)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "train_config": {"num_x_bins": 64, "num_y_bins": 96},
-        },
-        checkpoint_path,
-    )
-
-    loaded_model = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
-
-    assert loaded_model.decoder.x_head[2].out_features == 64
-    assert loaded_model.decoder.y_head[2].out_features == 96
