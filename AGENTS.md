@@ -2,6 +2,7 @@
 
 ## Project Structure & Module Organization
 - `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
+- One packed HDF5 can now hold both `action_env` and `frame_random` split schemes; training and evaluation default to `action_env` and can switch with `--split-scheme`.
 - `models/`: PyTorch model code, including the full WiFlow model, a structured CSI token encoder, a joint-query cross-attention decoder, asymmetric CNN, and axial attention stages.
 - `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
@@ -51,10 +52,22 @@ python train.py --dataset-root data\mmfi_pose.h5 --epochs 50 --batch-size 64 --o
 
 The default training configuration uses `OneCycleLR`, gradient clipping, a staged bone-loss curriculum, and stronger AdamW weight decay than the original baseline. The model now keeps 29 spatial CSI tokens before the joint-query decoder instead of collapsing them to 17 slots inside the encoder.
 
+Run the frame-random split configuration:
+
+```powershell
+python train.py --dataset-root data\mmfi_pose.h5 --split-scheme frame_random --epochs 50 --batch-size 64 --output-dir outputs\train_frame_random
+```
+
 Evaluate one checkpoint:
 
 ```powershell
 python eval.py --dataset-root data\mmfi_pose.h5 --checkpoint outputs\train\best_val_mpjpe.pth --output-dir outputs\eval
+```
+
+Evaluate against the frame-random split:
+
+```powershell
+python eval.py --dataset-root data\mmfi_pose.h5 --checkpoint outputs\train_frame_random\best_val_mpjpe.pth --split-scheme frame_random --output-dir outputs\eval_frame_random
 ```
 
 ## Coding Style & Naming Conventions

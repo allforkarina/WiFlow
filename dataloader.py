@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from sympy import Basic
-
 """HDF5-backed dataloader and raw-dataset packing utilities for MM-Fi pose data."""
 
 import argparse
@@ -25,6 +23,8 @@ except ImportError:  # pragma: no cover - handled at runtime when torch is unava
 DEFAULT_LOCAL_DATASET_ROOT = Path(r"D:\Files\WiFi_Pose\WiFiPoseV3\data\dataset")
 DEFAULT_LINUX_DATASET_ROOT = Path("/data/WiFiPose/dataset/dataset")
 SPLIT_NAMES = ("train", "val", "test")
+DEFAULT_SPLIT_SCHEME = "action_env"
+SPLIT_SCHEMES = (DEFAULT_SPLIT_SCHEME, "frame_random")
 SPLIT_RATIOS = {"train": 6, "val": 2, "test": 2}
 FRAMES_PER_SAMPLE = 297
 KEYPOINT_SHAPE = (17, 2)
@@ -32,6 +32,8 @@ CSI_SHAPE = (3, 114, 10)
 AMPLITUDE_NORMALIZATION_ATTR = "train_global_minmax"
 KEYPOINT_NORMALIZATION_ATTR = "train_axis_max"
 PHASE_CLEANING_ATTR = "unwrap_subcarrier_detrend_mean"
+RAW_STORAGE_ATTR = "cleaned_raw"
+NORMALIZED_STORAGE_ATTR = "normalized"
 
 
 # Sequence-level : Axx/Syy/rgb(wifi-csi) total frames
@@ -84,6 +86,35 @@ def resolve_h5_dataset_path(dataset_root: str | Path) -> Path:
     if dataset_path.suffix.lower() not in {".h5", ".hdf5"}:
         raise ValueError(f"Expected an HDF5 dataset path, got: {dataset_path}")
     return dataset_path
+
+
+def validate_split_scheme(split_scheme: str) -> str:
+    """Validate one supported split scheme name."""
+
+    if split_scheme not in SPLIT_SCHEMES:
+        raise ValueError(f"split_scheme must be one of {SPLIT_SCHEMES}, got {split_scheme}")
+    return split_scheme
+
+
+def _resolve_split_ratios(split_ratios: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+    """Return validated split ratios with the expected split keys."""
+
+    ratios = split_ratios or SPLIT_RATIOS
+    if tuple(ratios.keys()) != SPLIT_NAMES:
+        raise ValueError(f"Split keys must be exactly {SPLIT_NAMES}, got {tuple(ratios.keys())}")
+    return ratios
+
+
+def _split_indices_dataset_name(split: str, split_scheme: str) -> str:
+    """Return the HDF5 dataset name for one scheme-specific split index array."""
+
+    return f"{split_scheme}_{split}_indices"
+
+
+def _split_attr_name(split_scheme: str, attr_name: str) -> str:
+    """Return the HDF5 attribute name for one scheme-specific statistic."""
+
+    return f"{split_scheme}_{attr_name}"
 
 
 def sample_to_environment(sample_name: str) -> str:
@@ -154,11 +185,7 @@ def build_sample_splits(
 ) -> Dict[str, List[SampleSequence]]:
     """Split each (action, environment) group with a fixed 6:2:2 sample ratio."""
 
-    # 6:2:2 default split ratio for train, val, test
-    ratios = split_ratios or SPLIT_RATIOS 
-
-    if tuple(ratios.keys()) != SPLIT_NAMES:
-        raise ValueError(f"Split keys must be exactly {SPLIT_NAMES}, got {tuple(ratios.keys())}")
+    ratios = _resolve_split_ratios(split_ratios)
     if sum(ratios.values()) != 10:
         raise ValueError("Per-environment split ratios must sum to 10 samples")
 
@@ -190,6 +217,35 @@ def build_sample_splits(
         splits["test"].extend(shuffled_sequences[val_end:])             # 9 - 10
 
     return splits
+
+
+def build_frame_splits(
+    dataset_root: str | Path,
+    seed: int = 42,
+    split_ratios: Optional[Dict[str, int]] = None,
+) -> Dict[str, List[FrameRecord]]:
+    """Randomly split frame records without preserving action/environment sequence boundaries."""
+
+    ratios = _resolve_split_ratios(split_ratios)
+    total_ratio = sum(ratios.values())
+    if total_ratio <= 0:
+        raise ValueError("Split ratios must sum to a positive value")
+
+    records = expand_frame_records(discover_sample_sequences(dataset_root))
+    ordered_records = sorted(
+        records,
+        key=lambda record: (record.action, record.environment, record.sample, record.frame_stem),
+    )
+    shuffled_records = ordered_records[:]
+    random.Random(seed).shuffle(shuffled_records)
+
+    train_end = len(shuffled_records) * ratios["train"] // total_ratio
+    val_end = len(shuffled_records) * (ratios["train"] + ratios["val"]) // total_ratio
+    return {
+        "train": shuffled_records[:train_end],
+        "val": shuffled_records[train_end:val_end],
+        "test": shuffled_records[val_end:],
+    }
 
 
 # from sequence to frame, expand the sequence.
@@ -472,18 +528,33 @@ def build_h5_dataset(
     target_path = Path(output_path)                         # target hdf5 dataset path
     target_path.parent.mkdir(parents=True, exist_ok=True)   # ensure the dir exists
 
-    # First split in Sequence level, and expand to frame level.
+    all_sequences = discover_sample_sequences(source_root)
+    all_records = expand_frame_records(all_sequences)
+    record_to_index = {record: index for index, record in enumerate(all_records)}
+
     sample_splits = build_sample_splits(source_root, seed=seed, split_ratios=split_ratios)
-    split_records = {
-        split_name: expand_frame_records(sample_splits[split_name]) for split_name in SPLIT_NAMES
+    split_records_by_scheme = {
+        DEFAULT_SPLIT_SCHEME: {
+            split_name: expand_frame_records(sample_splits[split_name]) for split_name in SPLIT_NAMES
+        },
+        "frame_random": build_frame_splits(source_root, seed=seed, split_ratios=split_ratios),
     }
 
-    # find global min and max of train dataset
-    train_min, train_max = _compute_train_amplitude_bounds(split_records["train"])
-    keypoint_x_scale, keypoint_y_scale = _compute_train_keypoint_scales(split_records["train"])
+    scheme_stats = {}
+    for split_scheme, split_records in split_records_by_scheme.items():
+        train_records = split_records["train"]
+        train_min, train_max = _compute_train_amplitude_bounds(train_records)
+        keypoint_x_scale, keypoint_y_scale = _compute_train_keypoint_scales(train_records)
+        scheme_stats[split_scheme] = {
+            "amplitude_train_min": train_min,
+            "amplitude_train_max": train_max,
+            "keypoint_x_scale": keypoint_x_scale,
+            "keypoint_y_scale": keypoint_y_scale,
+        }
+    default_scheme_stats = scheme_stats[DEFAULT_SPLIT_SCHEME]
     
     # calculate the size of each dataset split, pre-allocated.
-    total_records = sum(len(records) for records in split_records.values())
+    total_records = len(all_records)
     string_dtype = h5py.string_dtype(encoding="utf-8")
 
     # "w" -> write
@@ -512,74 +583,112 @@ def build_h5_dataset(
         h5_file.attrs["source_root"] = str(source_root)
         h5_file.attrs["seed"] = seed
         h5_file.attrs["frames_per_sample"] = FRAMES_PER_SAMPLE
+        h5_file.attrs["storage_format"] = RAW_STORAGE_ATTR
+        h5_file.attrs["default_split_scheme"] = DEFAULT_SPLIT_SCHEME
+        h5_file.attrs["available_split_schemes"] = ",".join(SPLIT_SCHEMES)
         h5_file.attrs["amplitude_normalization"] = AMPLITUDE_NORMALIZATION_ATTR
-        h5_file.attrs["amplitude_train_min"] = train_min
-        h5_file.attrs["amplitude_train_max"] = train_max
+        h5_file.attrs["amplitude_train_min"] = default_scheme_stats["amplitude_train_min"]
+        h5_file.attrs["amplitude_train_max"] = default_scheme_stats["amplitude_train_max"]
         h5_file.attrs["keypoint_normalization"] = KEYPOINT_NORMALIZATION_ATTR
-        h5_file.attrs["keypoint_x_scale"] = keypoint_x_scale
-        h5_file.attrs["keypoint_y_scale"] = keypoint_y_scale
+        h5_file.attrs["keypoint_x_scale"] = default_scheme_stats["keypoint_x_scale"]
+        h5_file.attrs["keypoint_y_scale"] = default_scheme_stats["keypoint_y_scale"]
         h5_file.attrs["phase_cleaning"] = PHASE_CLEANING_ATTR
+        for split_scheme, stats in scheme_stats.items():
+            for name, value in stats.items():
+                h5_file.attrs[_split_attr_name(split_scheme, name)] = value
 
         # Start writing the data
-        offset = 0
         with tqdm(total=total_records, desc="Packing HDF5", dynamic_ncols=True) as progress_bar:
+            for dataset_index, record in enumerate(all_records):
+                keypoints, csi_amplitude, csi_phase, csi_phase_cos = _prepare_raw_frame(record)
+
+                keypoints_dataset[dataset_index] = keypoints                        # write cleaned raw data once
+                amplitude_dataset[dataset_index] = csi_amplitude
+                phase_dataset[dataset_index] = csi_phase
+                phase_cos_dataset[dataset_index] = csi_phase_cos
+                action_dataset[dataset_index] = record.action
+                sample_dataset[dataset_index] = record.sample
+                environment_dataset[dataset_index] = record.environment
+                frame_dataset[dataset_index] = record.frame_stem
+                progress_bar.update(1)
+
+        for split_name in SPLIT_NAMES:
+            default_indices = np.asarray(
+                [record_to_index[record] for record in split_records_by_scheme[DEFAULT_SPLIT_SCHEME][split_name]],
+                dtype=np.int64,
+            )
+            h5_file.create_dataset(f"{split_name}_indices", data=default_indices)
+
+        for split_scheme, split_records in split_records_by_scheme.items():
             for split_name in SPLIT_NAMES:
-                records = split_records[split_name]                                     # train -> val -> test
-                indices = np.arange(offset, offset + len(records), dtype=np.int64)      # get the indice based on the offset (split size)
-                h5_file.create_dataset(f"{split_name}_indices", data=indices)
-
-                for local_index, record in enumerate(records):
-                    dataset_index = offset + local_index
-                    keypoints, csi_amplitude, csi_phase, csi_phase_cos = _prepare_raw_frame(record)
-                    keypoints = _normalize_keypoints(                                   # Normalize the keypoints
-                        keypoints,
-                        x_scale=keypoint_x_scale,
-                        y_scale=keypoint_y_scale,
-                    )
-                    csi_amplitude = _normalize_csi_amplitude(                           # Normalize the CSI amplitude
-                        csi_amplitude,
-                        train_min=train_min,                                            # Not only train dataset use train_min and train_max, but also val and test.
-                        train_max=train_max,
-                    )
-
-                    keypoints_dataset[dataset_index] = keypoints                        # write data into train/val/test dataset
-                    amplitude_dataset[dataset_index] = csi_amplitude
-                    phase_dataset[dataset_index] = csi_phase
-                    phase_cos_dataset[dataset_index] = csi_phase_cos
-                    action_dataset[dataset_index] = record.action
-                    sample_dataset[dataset_index] = record.sample
-                    environment_dataset[dataset_index] = record.environment
-                    frame_dataset[dataset_index] = record.frame_stem
-                    progress_bar.update(1)
-
-                offset += len(records)
+                indices = np.asarray(
+                    [record_to_index[record] for record in split_records[split_name]],
+                    dtype=np.int64,
+                )
+                h5_file.create_dataset(_split_indices_dataset_name(split_name, split_scheme), data=indices)
 
     return {
         "num_records": total_records,
-        "num_train_frames": len(split_records["train"]),
-        "num_val_frames": len(split_records["val"]),
-        "num_test_frames": len(split_records["test"]),
+        "num_train_frames": len(split_records_by_scheme[DEFAULT_SPLIT_SCHEME]["train"]),
+        "num_val_frames": len(split_records_by_scheme[DEFAULT_SPLIT_SCHEME]["val"]),
+        "num_test_frames": len(split_records_by_scheme[DEFAULT_SPLIT_SCHEME]["test"]),
     }
 
 
 class MMFiPoseDataset:
     """Frame-level HDF5 dataset that returns aligned pose labels and CSI tensors."""
 
-    def __init__(self, dataset_root: str | Path, split: str) -> None:
+    def __init__(self, dataset_root: str | Path, split: str, split_scheme: str = DEFAULT_SPLIT_SCHEME) -> None:
         if split not in SPLIT_NAMES:
             raise ValueError(f"split must be one of {SPLIT_NAMES}, got {split}")
 
         self.dataset_root = resolve_h5_dataset_path(dataset_root)
         self.split = split
+        self.split_scheme = validate_split_scheme(split_scheme)
         self._h5_file: h5py.File | None = None
 
         with h5py.File(self.dataset_root, "r") as h5_file:
-            self.indices = np.asarray(h5_file[f"{split}_indices"], dtype=np.int64)
+            index_dataset_name = _split_indices_dataset_name(split, self.split_scheme)
+            if index_dataset_name in h5_file:
+                self.indices = np.asarray(h5_file[index_dataset_name], dtype=np.int64)
+            elif self.split_scheme == DEFAULT_SPLIT_SCHEME and f"{split}_indices" in h5_file:
+                self.indices = np.asarray(h5_file[f"{split}_indices"], dtype=np.int64)
+            else:
+                raise KeyError(
+                    f"HDF5 dataset does not contain indices for split_scheme={self.split_scheme!r}, split={split!r}. "
+                    "Rebuild the dataset with dual split support."
+                )
+            self.storage_format = _decode_string(h5_file.attrs.get("storage_format", NORMALIZED_STORAGE_ATTR))
             self.keypoint_normalization = _decode_string(
                 h5_file.attrs.get("keypoint_normalization", "")
             )
-            self.keypoint_x_scale = float(h5_file.attrs.get("keypoint_x_scale", 1.0))
-            self.keypoint_y_scale = float(h5_file.attrs.get("keypoint_y_scale", 1.0))
+            self.amplitude_normalization = _decode_string(
+                h5_file.attrs.get("amplitude_normalization", "")
+            )
+            self.keypoint_x_scale = float(
+                h5_file.attrs.get(
+                    _split_attr_name(self.split_scheme, "keypoint_x_scale"),
+                    h5_file.attrs.get("keypoint_x_scale", 1.0),
+                )
+            )
+            self.keypoint_y_scale = float(
+                h5_file.attrs.get(
+                    _split_attr_name(self.split_scheme, "keypoint_y_scale"),
+                    h5_file.attrs.get("keypoint_y_scale", 1.0),
+                )
+            )
+            self.amplitude_train_min = float(
+                h5_file.attrs.get(
+                    _split_attr_name(self.split_scheme, "amplitude_train_min"),
+                    h5_file.attrs.get("amplitude_train_min", 0.0),
+                )
+            )
+            self.amplitude_train_max = float(
+                h5_file.attrs.get(
+                    _split_attr_name(self.split_scheme, "amplitude_train_max"),
+                    h5_file.attrs.get("amplitude_train_max", 1.0),
+                )
+            )
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -607,14 +716,27 @@ class MMFiPoseDataset:
 
         h5_file = self._get_h5_file()
         frame_index = int(self.indices[index])
+        keypoints = np.asarray(h5_file["keypoints"][frame_index], dtype=np.float32)
+        csi_amplitude = np.asarray(h5_file["csi_amplitude"][frame_index], dtype=np.float32)
+        if self.storage_format == RAW_STORAGE_ATTR:
+            keypoints = _normalize_keypoints(
+                keypoints,
+                x_scale=self.keypoint_x_scale,
+                y_scale=self.keypoint_y_scale,
+            )
+            csi_amplitude = _normalize_csi_amplitude(
+                csi_amplitude,
+                train_min=self.amplitude_train_min,
+                train_max=self.amplitude_train_max,
+            )
 
         return {
             "action": _decode_string(h5_file["action"][frame_index]),
             "sample": _decode_string(h5_file["sample"][frame_index]),
             "environment": _decode_string(h5_file["environment"][frame_index]),
             "frame_id": _decode_string(h5_file["frame_id"][frame_index]),
-            "keypoints": np.asarray(h5_file["keypoints"][frame_index], dtype=np.float32),
-            "csi_amplitude": np.asarray(h5_file["csi_amplitude"][frame_index], dtype=np.float32),
+            "keypoints": keypoints,
+            "csi_amplitude": csi_amplitude,
             "csi_phase": np.asarray(h5_file["csi_phase"][frame_index], dtype=np.float32),
             "csi_phase_cos": np.asarray(h5_file["csi_phase_cos"][frame_index], dtype=np.float32),
         }
@@ -628,6 +750,7 @@ def create_data_loader(
     seed: int = 42,
     num_workers: int = 0,
     shuffle: Optional[bool] = None,
+    split_scheme: str = DEFAULT_SPLIT_SCHEME,
     split_ratios: Optional[Dict[str, int]] = None,
 ):
     """Create one PyTorch DataLoader for the requested HDF5 split."""
@@ -640,7 +763,7 @@ def create_data_loader(
 
     del seed, split_ratios  # pre-allocated while build .h5 file
 
-    dataset = MMFiPoseDataset(dataset_root=dataset_root, split=split)
+    dataset = MMFiPoseDataset(dataset_root=dataset_root, split=split, split_scheme=split_scheme)
     should_shuffle = shuffle if shuffle is not None else split == "train"
     return DataLoader(
         dataset,
@@ -655,6 +778,7 @@ def create_data_loaders(
     batch_size: int,
     seed: int = 42,
     num_workers: int = 0,
+    split_scheme: str = DEFAULT_SPLIT_SCHEME,
     split_ratios: Optional[Dict[str, int]] = None,
 ):
     """Create train/val/test DataLoaders from the same HDF5 dataset."""
@@ -666,6 +790,7 @@ def create_data_loaders(
             batch_size=batch_size,
             seed=seed,
             num_workers=num_workers,
+            split_scheme=split_scheme,
             split_ratios=split_ratios,
         )
         for split in SPLIT_NAMES
@@ -674,10 +799,14 @@ def create_data_loaders(
 
 # ========== CLI utilities for dataset inspection and debugging ==========
 
-def summarize_splits(dataset_root: str | Path) -> Dict[str, Dict[str, int]]:
+def summarize_splits(
+    dataset_root: str | Path,
+    split_scheme: str = DEFAULT_SPLIT_SCHEME,
+) -> Dict[str, Dict[str, int]]:
     """Return split statistics for the prepacked HDF5 dataset."""
 
     dataset_path = resolve_h5_dataset_path(dataset_root)
+    validated_split_scheme = validate_split_scheme(split_scheme)
     summary: Dict[str, Dict[str, int]] = {}
 
     with h5py.File(dataset_path, "r") as h5_file:
@@ -685,7 +814,16 @@ def summarize_splits(dataset_root: str | Path) -> Dict[str, Dict[str, int]]:
         environment_dataset = h5_file["environment"]
 
         for split_name in SPLIT_NAMES:
-            indices = np.asarray(h5_file[f"{split_name}_indices"], dtype=np.int64)
+            dataset_name = _split_indices_dataset_name(split_name, validated_split_scheme)
+            if dataset_name in h5_file:
+                indices = np.asarray(h5_file[dataset_name], dtype=np.int64)
+            elif validated_split_scheme == DEFAULT_SPLIT_SCHEME and f"{split_name}_indices" in h5_file:
+                indices = np.asarray(h5_file[f"{split_name}_indices"], dtype=np.int64)
+            else:
+                raise KeyError(
+                    f"HDF5 dataset does not contain indices for split_scheme={validated_split_scheme!r}, split={split_name!r}. "
+                    "Rebuild the dataset with dual split support."
+                )
             actions = {_decode_string(action_dataset[index]) for index in indices}
             environments = {_decode_string(environment_dataset[index]) for index in indices}
             summary[split_name] = {
@@ -719,6 +857,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MM-Fi HDF5 dataloader preview")
     parser.add_argument("--dataset-root", type=str, required=True, help="Path to the HDF5 dataset file")
     parser.add_argument(
+        "--split-scheme",
+        type=str,
+        default=DEFAULT_SPLIT_SCHEME,
+        choices=SPLIT_SCHEMES,
+        help="Which split scheme to inspect",
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
         help="Load one sample from each split and print its shapes",
@@ -731,9 +876,10 @@ def main() -> None:
 
     args = parse_args()
     dataset_path = resolve_h5_dataset_path(args.dataset_root)
-    summary = summarize_splits(dataset_path)
+    summary = summarize_splits(dataset_path, split_scheme=args.split_scheme)
 
     print(f"dataset_root: {dataset_path}")
+    print(f"split_scheme: {args.split_scheme}")
     for split_name in SPLIT_NAMES:
         split_info = summary[split_name]
         print(
@@ -744,7 +890,7 @@ def main() -> None:
 
     if args.preview:
         for split_name in SPLIT_NAMES:
-            dataset = MMFiPoseDataset(dataset_root=dataset_path, split=split_name)
+            dataset = MMFiPoseDataset(dataset_root=dataset_path, split=split_name, split_scheme=args.split_scheme)
             print(f"{split_name}_preview: {_preview_sample(dataset)}")
             dataset.close()
 

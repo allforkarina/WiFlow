@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from dataloader import DEFAULT_SPLIT_SCHEME
 from train import (
     COCO_BONE_EDGES,
     JOINT_LOSS_WEIGHTS,
@@ -92,6 +93,7 @@ def test_train_config_uses_paper_defaults() -> None:
 
     assert config.epochs == 50
     assert config.batch_size == 64
+    assert config.split_scheme == DEFAULT_SPLIT_SCHEME
     assert config.lr == 2e-5
     assert config.max_lr == 5e-4
     assert config.weight_decay == 5e-4

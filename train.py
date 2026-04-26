@@ -14,7 +14,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
 from torch.utils.data import DataLoader, Subset
 
-from dataloader import create_data_loaders
+from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, create_data_loaders
 from models import WiFlowModel
 
 
@@ -78,6 +78,7 @@ LIMB_VECTOR_LOSS_WEIGHTS: tuple[float, ...] = (
 class TrainConfig:
     dataset_root: str
     output_dir: str = "outputs/train"                           # directory for logs and checkpoints
+    split_scheme: str = DEFAULT_SPLIT_SCHEME                    # dataset split scheme
     epochs: int = 50                                            # training epochs
     batch_size: int = 64                                        # batch size
     lr: float = 2e-5                                            # initial learning rate for OneCycleLR
@@ -411,6 +412,7 @@ def run_training(config: TrainConfig) -> None:
         batch_size=config.batch_size,           # batch size
         seed=config.seed,
         num_workers=config.num_workers,         # num_workers for data loading
+        split_scheme=config.split_scheme,
     )
 
     train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
@@ -529,6 +531,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the WiFlow pose model.")
     parser.add_argument("--dataset-root", required=True, help="Path to the MM-Fi HDF5 dataset or its parent directory.")
     parser.add_argument("--output-dir", default="outputs/train", help="Directory for logs and checkpoints.")
+    parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-5)

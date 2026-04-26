@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> dict[str, int]:
 
     print(f"dataset_root: {dataset_root}")
     print(f"output_path: {Path(args.output_path)}")
+    print("split_schemes: action_env, frame_random")
     print(
         f"frames: total={summary['num_records']}, "
         f"train={summary['num_train_frames']}, "

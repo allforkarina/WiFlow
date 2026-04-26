@@ -11,7 +11,7 @@ import torch
 from matplotlib.axes import Axes
 from torch.utils.data import DataLoader
 
-from dataloader import MMFiPoseDataset, denormalize_keypoints
+from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, MMFiPoseDataset, denormalize_keypoints
 from models import WiFlowModel
 from train import COCO_BONE_EDGES, compute_metrics, compute_torso_scale, prepare_model_input, select_device
 
@@ -280,6 +280,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", required=True, help="Path to the MM-Fi HDF5 dataset or its parent directory.")
     parser.add_argument("--checkpoint", required=True, help="Path to a WiFlow checkpoint file.")
     parser.add_argument("--output-dir", default="outputs/eval", help="Directory for evaluation visualizations.")
+    parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
@@ -292,7 +293,11 @@ def main() -> None:
     device = select_device(args.device)
     model = load_checkpoint_model(args.checkpoint, device)
 
-    test_dataset = MMFiPoseDataset(dataset_root=args.dataset_root, split="test")
+    test_dataset = MMFiPoseDataset(
+        dataset_root=args.dataset_root,
+        split="test",
+        split_scheme=args.split_scheme,
+    )
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
