@@ -11,7 +11,7 @@ def test_wiflow_encoder_asymmetric_cnn_layer2_output_shape() -> None:
 
     y = layer(x)
 
-    assert y.shape == (4, 64, 10, 17)
+    assert y.shape == (4, 64, 10, 29)
 
 
 def test_wiflow_encoder_asymmetric_cnn_layer2_stage_shapes() -> None:
@@ -23,14 +23,11 @@ def test_wiflow_encoder_asymmetric_cnn_layer2_stage_shapes() -> None:
     resblock1_output = layer.resblock1(stem_output)
     resblock2_output = layer.resblock2(resblock1_output)
     resblock3_output = layer.resblock3(resblock2_output)
-    pooled_output = layer.spatial_pool(resblock3_output)
-
     assert reshaped.shape == (2, 3, 10, 114)
     assert stem_output.shape == (2, 16, 10, 114)
     assert resblock1_output.shape == (2, 32, 10, 57)
     assert resblock2_output.shape == (2, 64, 10, 29)
     assert resblock3_output.shape == (2, 64, 10, 29)
-    assert pooled_output.shape == (2, 64, 10, 17)
 
 
 def test_wiflow_encoder_asymmetric_cnn_layer2_shortcuts_match_main_path() -> None:
@@ -56,4 +53,4 @@ def test_wiflow_encoder_asymmetric_cnn_layer2_supports_single_item_batch() -> No
 
     y = layer(x)
 
-    assert y.shape == (1, 64, 10, 17)
+    assert y.shape == (1, 64, 10, 29)

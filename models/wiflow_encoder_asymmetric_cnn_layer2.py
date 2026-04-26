@@ -50,7 +50,7 @@ class AsymmetricResidualDownsampleBlock(nn.Module):
 
 
 class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
-    """Structured CSI encoder that maps [B, 3, 114, 10] to [B, 64, 10, 17]."""
+    """Structured CSI encoder that maps [B, 3, 114, 10] to [B, 64, 10, 29]."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -85,7 +85,6 @@ class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
             out_channels=64,
             spatial_stride=1,                           # refine structured CSI features
         )
-        self.spatial_pool = nn.AdaptiveAvgPool2d((10, 17))
 
     def _reshape_input(self, x: torch.Tensor) -> torch.Tensor:
         return x.permute(0, 1, 3, 2)                   # [B, 3, 114, 10] -> [B, 3, 10, 114]
@@ -96,4 +95,4 @@ class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
         x = self.resblock1(x)                           # [B, 32, 10, 57]
         x = self.resblock2(x)                           # [B, 64, 10, 29]
         x = self.resblock3(x)                           # [B, 64, 10, 29]
-        return self.spatial_pool(x)                     # [B, 64, 10, 17]
+        return x                                         # [B, 64, 10, 29]

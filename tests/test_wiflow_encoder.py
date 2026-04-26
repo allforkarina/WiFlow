@@ -15,7 +15,7 @@ def test_wiflow_encoder_output_shape() -> None:
 
     y = encoder(x)
 
-    assert y.shape == (4, 64, 17, 10)
+    assert y.shape == (4, 64, 29, 10)
 
 
 def test_wiflow_encoder_supports_single_item_batch() -> None:
@@ -24,7 +24,7 @@ def test_wiflow_encoder_supports_single_item_batch() -> None:
 
     y = encoder(x)
 
-    assert y.shape == (1, 64, 17, 10)
+    assert y.shape == (1, 64, 29, 10)
 
 
 def test_wiflow_encoder_uses_expected_layers() -> None:
@@ -42,6 +42,15 @@ def test_wiflow_encoder_stage_shapes() -> None:
     axial_input = encoder._prepare_axial_attention_input(layer1_output)
     layer3_output = encoder.layer3(axial_input)
 
-    assert layer1_output.shape == (2, 64, 10, 17)
-    assert axial_input.shape == (2, 64, 17, 10)
-    assert layer3_output.shape == (2, 64, 17, 10)
+    assert layer1_output.shape == (2, 64, 10, 29)
+    assert axial_input.shape == (2, 64, 29, 10)
+    assert layer3_output.shape == (2, 64, 29, 10)
+
+
+def test_wiflow_encoder_flattens_csi_tokens() -> None:
+    encoder = WiFlowEncoder()
+    x = torch.randn(2, 64, 29, 10)
+
+    y = encoder.flatten_tokens(x)
+
+    assert y.shape == (2, 290, 64)

@@ -4,53 +4,35 @@ import torch
 from torch import nn
 
 
-class TemporalAttentionPooling(nn.Module):
-    """Learn temporal weights for each keypoint feature."""
-
-    def __init__(self, channels: int) -> None:
-        super().__init__()
-        self.attention_logits = nn.Conv2d(
-            in_channels=channels,
-            out_channels=1,
-            kernel_size=1,
-        )
-
-    def compute_attention_weights(self, x: torch.Tensor) -> torch.Tensor:
-        logits = self.attention_logits(x)
-        return torch.softmax(logits, dim=-1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        weights = self.compute_attention_weights(x)
-        return torch.sum(x * weights, dim=-1, keepdim=True)
-
-
 class WiFlowDecoder(nn.Module):
-    """Joint-aware decoder that maps [B, 64, 17, 10] to [B, 17, 2]."""
+    """Joint-query decoder that maps [B, 290, 64] CSI tokens to [B, 17, 2]."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.refinement = nn.Sequential(                        # 64 channels -> 32 channels
-            nn.Conv2d(
-                in_channels=64,
-                out_channels=32,
-                kernel_size=3,
-                padding=1,
-                bias=False,
-            ),
-            nn.BatchNorm2d(32),
-            nn.SiLU(inplace=True),
+        self.num_queries = 17
+        self.embedding_dim = 64
+        self.num_heads = 8
+        self.joint_queries = nn.Parameter(torch.zeros(self.num_queries, self.embedding_dim))
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=self.embedding_dim,
+            num_heads=self.num_heads,
+            batch_first=True,
+            dropout=0.0,
         )
-        self.temporal_pool = TemporalAttentionPooling(channels=32)
-        self.joint_embedding = nn.Parameter(torch.zeros(17, 32))
-        self.coordinate_head = nn.Sequential(
-            nn.Linear(32, 32),
+        self.attention_norm = nn.LayerNorm(self.embedding_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(self.embedding_dim, self.embedding_dim),
             nn.SiLU(inplace=True),
-            nn.Linear(32, 2),
+            nn.Linear(self.embedding_dim, self.embedding_dim),
         )
+        self.ffn_norm = nn.LayerNorm(self.embedding_dim)
+        self.coordinate_head = nn.Linear(self.embedding_dim, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.refinement(x)
-        x = self.temporal_pool(x)
-        x = x.squeeze(-1).transpose(1, 2)
-        x = x + self.joint_embedding.unsqueeze(0)
-        return self.coordinate_head(x)
+        batch_size = x.shape[0]
+        query = self.joint_queries.unsqueeze(0).expand(batch_size, -1, -1)
+        attention_output, _ = self.cross_attention(query, x, x, need_weights=False)
+        query = self.attention_norm(query + attention_output)
+        ffn_output = self.ffn(query)
+        query = self.ffn_norm(query + ffn_output)
+        return self.coordinate_head(query)

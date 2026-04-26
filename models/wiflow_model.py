@@ -17,4 +17,5 @@ class WiFlowModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.encoder(x)
+        x = self.encoder.flatten_tokens(x)
         return self.decoder(x)
