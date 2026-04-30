@@ -29,6 +29,17 @@ def test_wiflow_model_supports_amp_only() -> None:
     assert y.shape == (1, 17, 2)
 
 
+def test_wiflow_model_supports_axial_mode() -> None:
+    model = WiFlowModel(axial_mode="temporal_then_spatial")
+    x = torch.randn(1, 6, 114, 10)
+
+    y = model(x)
+
+    assert model.axial_mode == "temporal_then_spatial"
+    assert model.axial_encoder.mode == "temporal_then_spatial"
+    assert y.shape == (1, 17, 2)
+
+
 def test_wiflow_model_uses_expected_modules() -> None:
     model = WiFlowModel()
 

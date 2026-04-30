@@ -104,13 +104,16 @@ def test_write_csv_rows_writes_header_and_rows(tmp_path) -> None:
     assert "0,2,1.0,0.5" in contents
 
 
-def test_load_checkpoint_model_uses_train_config_csi_features(tmp_path) -> None:
+def test_load_checkpoint_model_uses_train_config(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pth"
-    model = WiFlowModel(input_channels=6)
+    model = WiFlowModel(input_channels=6, axial_mode="parallel_sum")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
-            "train_config": {"csi_features": ("csi_amplitude", "csi_phase_cos")},
+            "train_config": {
+                "csi_features": ("csi_amplitude", "csi_phase_cos"),
+                "axial_mode": "parallel_sum",
+            },
         },
         checkpoint_path,
     )
@@ -119,6 +122,7 @@ def test_load_checkpoint_model_uses_train_config_csi_features(tmp_path) -> None:
 
     assert isinstance(loaded_model, WiFlowModel)
     assert loaded_model.input_channels == 6
+    assert loaded_model.axial_mode == "parallel_sum"
     assert csi_features == ("csi_amplitude", "csi_phase_cos")
 
 

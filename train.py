@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
 from torch.utils.data import DataLoader, Subset
 
 from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, create_data_loaders
-from models import COCO_BONE_EDGES, WiFlowModel
+from models import AXIAL_ENCODER_MODES, COCO_BONE_EDGES, WiFlowModel
 
 
 DEFAULT_CSI_FEATURES: tuple[str, ...] = ("csi_amplitude", "csi_phase_cos")
@@ -31,6 +31,7 @@ class TrainConfig:
     output_dir: str = "outputs/train"
     split_scheme: str = DEFAULT_SPLIT_SCHEME
     csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES
+    axial_mode: str = "spatial_then_temporal"
     epochs: int = 50
     batch_size: int = 64
     lr: float = 2e-5
@@ -267,7 +268,7 @@ def run_training(config: TrainConfig) -> None:
 
     train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
     val_loader = maybe_subset_loader(loaders["val"], config.subset_size)
-    model = WiFlowModel(input_channels=input_channels).to(device)
+    model = WiFlowModel(input_channels=input_channels, axial_mode=config.axial_mode).to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = OneCycleLR(
         optimizer,
@@ -309,6 +310,7 @@ def run_training(config: TrainConfig) -> None:
         row: Dict[str, float | int | str] = {
             "epoch": epoch,
             "csi_features": feature_names,
+            "axial_mode": config.axial_mode,
             "train_loss": train_metrics["loss"],
             "train_coord_loss": train_metrics["coord_loss"],
             "train_bone_loss": train_metrics["bone_loss"],
@@ -373,6 +375,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs/train", help="Directory for logs and checkpoints.")
     parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
     parser.add_argument("--csi-features", default=csi_feature_string(DEFAULT_CSI_FEATURES))
+    parser.add_argument("--axial-mode", default="spatial_then_temporal", choices=AXIAL_ENCODER_MODES)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-5)

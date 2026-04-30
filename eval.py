@@ -27,7 +27,8 @@ def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> 
         raise KeyError(f"Checkpoint is missing train_config.csi_features: {checkpoint_path}")
 
     csi_features = tuple(train_config["csi_features"])
-    model = WiFlowModel(input_channels=len(csi_features) * 3).to(device)   # load the model
+    axial_mode = str(train_config.get("axial_mode", "spatial_then_temporal"))
+    model = WiFlowModel(input_channels=len(csi_features) * 3, axial_mode=axial_mode).to(device)   # load the model
     model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
     model.eval()                                                    # eval mode
     return model, csi_features

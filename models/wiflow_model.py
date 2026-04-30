@@ -12,11 +12,12 @@ from .wiflow_spatial_encoder import WiFlowSpatialEncoder
 class WiFlowModel(nn.Module):
     """End-to-end WiFlow model that maps CSI features to COCO17 coordinates."""
 
-    def __init__(self, input_channels: int = 6) -> None:
+    def __init__(self, input_channels: int = 6, axial_mode: str = "spatial_then_temporal") -> None:
         super().__init__()
         self.input_channels = input_channels
+        self.axial_mode = axial_mode
         self.spatial_encoder = WiFlowSpatialEncoder(input_channels=input_channels)
-        self.axial_encoder = WiFlowAxialEncoder()
+        self.axial_encoder = WiFlowAxialEncoder(mode=axial_mode)
         self.pooler = WiFlowAttentionPooler()
         self.decoder = WiFlowSkeletonDecoder()
 

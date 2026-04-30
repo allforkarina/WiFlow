@@ -3,16 +3,17 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from models import WiFlowAxialEncoder
+from models import AXIAL_ENCODER_MODES, WiFlowAxialEncoder
 
 
 def test_wiflow_axial_encoder_output_shape() -> None:
-    layer = WiFlowAxialEncoder()
     x = torch.randn(4, 128, 29, 10)
 
-    y = layer(x)
+    for mode in AXIAL_ENCODER_MODES:
+        layer = WiFlowAxialEncoder(mode=mode)
+        y = layer(x)
 
-    assert y.shape == (4, 256, 29, 10)
+        assert y.shape == (4, 256, 29, 10)
 
 
 def test_wiflow_axial_encoder_attention_configuration() -> None:
@@ -26,6 +27,10 @@ def test_wiflow_axial_encoder_attention_configuration() -> None:
     assert isinstance(layer.temporal_norm, nn.LayerNorm)
     assert layer.channel_projection.in_channels == 128
     assert layer.channel_projection.out_channels == 256
+
+    concat_layer = WiFlowAxialEncoder(mode="parallel_concat")
+    assert concat_layer.concat_projection.in_channels == 256
+    assert concat_layer.concat_projection.out_channels == 256
 
 
 def test_wiflow_axial_encoder_reshape_contracts() -> None:
@@ -43,3 +48,12 @@ def test_wiflow_axial_encoder_reshape_contracts() -> None:
     assert temporal_restored.shape == (2, 128, 29, 10)
     assert torch.equal(spatial_restored, x)
     assert torch.equal(temporal_restored, x)
+
+
+def test_wiflow_axial_encoder_rejects_unknown_mode() -> None:
+    try:
+        WiFlowAxialEncoder(mode="unknown")
+    except ValueError as exc:
+        assert "Unsupported axial encoder mode" in str(exc)
+    else:
+        raise AssertionError("Expected WiFlowAxialEncoder to reject an unknown mode")

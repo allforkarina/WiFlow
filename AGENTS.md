@@ -58,7 +58,15 @@ Run the default training configuration:
 python train.py --dataset-root data\mmfi_pose.h5 --epochs 50 --batch-size 64 --output-dir outputs\train
 ```
 
-The default training configuration uses `csi_amplitude,csi_phase_cos` input features, `OneCycleLR`, gradient clipping, `coord_l1 + 0.5 * bone_l1`, and stronger AdamW weight decay than the original baseline. Use `--csi-features csi_amplitude` for an amplitude-only run.
+The default training configuration uses `csi_amplitude,csi_phase_cos` input features, `OneCycleLR`, gradient clipping, `coord_l1 + 0.5 * bone_l1`, the baseline axial mode `spatial_then_temporal`, and stronger AdamW weight decay than the original baseline. Use `--csi-features csi_amplitude` for an amplitude-only run.
+
+Run an axial-attention encoder ablation:
+
+```powershell
+python train.py --dataset-root data\mmfi_pose.h5 --axial-mode temporal_then_spatial --epochs 50 --batch-size 64 --output-dir outputs\train_temporal_then_spatial
+```
+
+Supported `--axial-mode` values are `spatial_then_temporal`, `temporal_then_spatial`, `parallel_sum`, and `parallel_concat`. Checkpoints store the selected mode in `train_config`, and evaluation rebuilds the model from that saved configuration.
 
 Run the frame-random split configuration:
 

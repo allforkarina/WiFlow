@@ -11,6 +11,7 @@ from train import (
     compute_losses,
     compute_metrics,
     csi_feature_string,
+    parse_args,
     parse_csi_features,
     prepare_model_input,
 )
@@ -104,8 +105,26 @@ def test_train_config_uses_refactor_defaults() -> None:
     assert config.batch_size == 64
     assert config.split_scheme == DEFAULT_SPLIT_SCHEME
     assert config.csi_features == DEFAULT_CSI_FEATURES
+    assert config.axial_mode == "spatial_then_temporal"
     assert config.lr == 2e-5
     assert config.max_lr == 5e-4
     assert config.weight_decay == 5e-4
     assert config.grad_clip_norm == 1.0
     assert config.bone_loss_weight == 0.5
+
+
+def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "train.py",
+            "--dataset-root",
+            "data/mmfi_pose.h5",
+            "--axial-mode",
+            "parallel_concat",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.axial_mode == "parallel_concat"
