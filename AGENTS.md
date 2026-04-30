@@ -12,6 +12,14 @@
 
 Generated datasets can be large and should not be committed. Keep raw dataset roots outside the repository.
 
+## Project Domain Knowledge
+- One CSI sample is a physical signal tensor shaped `3 antennas x 114 subcarriers x 10 frames`. The subcarrier axis carries spatial-frequency response, the antenna axis carries spatial phase-difference and direction information, and the temporal axis carries motion cues such as Doppler effects.
+- CSI amplitude and phase are complementary physical quantities with different noise patterns. When both are used, do not assume they should be processed identically or fused by blind concatenation.
+- The target pose is the structured COCO17 keypoint set. The 17 joints are not independent coordinates; they are constrained by the human skeleton topology.
+- The central modeling gap is that CSI is a low-resolution, high-noise, implicit sensing signal, while pose regression needs precise coordinates. Strong skeleton priors are important for bridging that gap.
+- Preserve CSI physical dimension semantics where practical. Avoid arbitrary flattening or pooling that mixes antenna, subcarrier, and temporal meanings before the model has selected useful information.
+- Prefer attention-based information selection over destructive pooling for low-SNR CSI features, and use structured supervision such as bone or topology-aware losses in addition to coordinate losses.
+
 ## Build, Test, and Development Commands
 Use the existing Conda environment for development commands:
 
