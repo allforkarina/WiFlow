@@ -9,7 +9,6 @@ import pytest
 from dataloader import (
     CSI_SHAPE,
     DEFAULT_SPLIT_SCHEME,
-    FRAMES_PER_SAMPLE,
     KEYPOINT_SHAPE,
     MMFiPoseDataset,
     RAW_STORAGE_ATTR,
@@ -207,7 +206,6 @@ def test_summarize_splits_uses_requested_scheme(tmp_path) -> None:
 def test_build_h5_dataset_writes_dual_split_indices(tmp_path, monkeypatch) -> None:
     output_path = tmp_path / "packed.h5"
     sequences = _make_sample_sequences()
-    records = {_make_frame_record(sequence.sample): sequence for sequence in sequences}
     records_by_sample = {
         sequence.sample: FrameRecord(
             action=sequence.action,
