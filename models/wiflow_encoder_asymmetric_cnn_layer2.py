@@ -58,7 +58,7 @@ class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
         self.input_temporal = 10
         self.input_spatial = 114
         self.stem_channels = 16                         # [B, 16, 10, 114]
-        self.stem = nn.Sequential(                      # 3 -> 16 channels
+        self.stem = nn.Sequential(                      # three antennas amp feature -> 16 channels feature
             nn.Conv2d(
                 in_channels=self.input_channels,
                 out_channels=self.stem_channels,
@@ -70,6 +70,7 @@ class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
             nn.BatchNorm2d(self.stem_channels),
             nn.ReLU(inplace=True),
         )
+        # extract subcarrier-time features and downsample spatial dimension
         self.resblock1 = AsymmetricResidualDownsampleBlock(
             in_channels=16,
             out_channels=32,
@@ -95,4 +96,4 @@ class WiFlowEncoderAsymmetricCNNLayer2(nn.Module):
         x = self.resblock1(x)                           # [B, 32, 10, 57]
         x = self.resblock2(x)                           # [B, 64, 10, 29]
         x = self.resblock3(x)                           # [B, 64, 10, 29]
-        return x                                         # [B, 64, 10, 29]
+        return x                                        # [B, 64, 10, 29]

@@ -9,8 +9,8 @@ class WiFlowEncoderAxialAttentionLayer3(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.channels = 64  # [B, 64, 10, 17] -> batch_size, channel, temporal, spatial
-        self.num_heads = 8  # [B, 8, 10, 17]
+        self.channels = 64  # [B, 64, 10, 29] -> batch_size, channel, temporal, spatial
+        self.num_heads = 8  # [B, 8, 10, 29]
 
         # [B, 64, 29, 10] -> [B x 29, 10, 64], extract the temporal features of one spatial token
         self.temporal_attention = nn.MultiheadAttention(
@@ -74,6 +74,7 @@ class WiFlowEncoderAxialAttentionLayer3(nn.Module):
             temporal,
         )
 
+        #^ problem 02: do temporal attention first, then do spatial attention on the processed feature.
         spatial_input = self._prepare_spatial_attention_input(x)                    # [B x 10, 29, 64]
         spatial_output, _ = self.spatial_attention(
             spatial_input,
