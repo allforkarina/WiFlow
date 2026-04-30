@@ -5,7 +5,7 @@ import csv
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Sequence
+from typing import Dict, Iterable, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -15,168 +15,106 @@ from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
 from torch.utils.data import DataLoader, Subset
 
 from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, create_data_loaders
-from models import WiFlowModel
+from models import COCO_BONE_EDGES, WiFlowModel
 
 
-COCO_BONE_EDGES: tuple[tuple[int, int], ...] = (
-    (0, 5),
-    (0, 6),
-    (5, 6),
-    (5, 7),
-    (7, 9),
-    (6, 8),
-    (8, 10),
-    (5, 11),
-    (6, 12),
-    (11, 12),
-    (11, 13),
-    (13, 15),
-    (12, 14),
-    (14, 16),
-)
-PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)   # PCK Threshold
-RIGHT_SHOULDER_INDEX = 6                                        # right shoulder keypoint indice
-LEFT_HIP_INDEX = 11                                             # left hip keypoint indice
-JOINT_LOSS_WEIGHTS: tuple[float, ...] = (
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.25,
-    1.25,
-    2.0,
-    2.0,
-    3.0,
-    3.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-)
-LIMB_VECTOR_LOSS_WEIGHTS: tuple[float, ...] = (
-    1.0,
-    1.0,
-    1.0,
-    2.0,
-    3.0,
-    2.0,
-    3.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-)
+DEFAULT_CSI_FEATURES: tuple[str, ...] = ("csi_amplitude", "csi_phase_cos")
+SUPPORTED_CSI_FEATURES: tuple[str, ...] = ("csi_amplitude", "csi_phase_cos")
+PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)
+RIGHT_SHOULDER_INDEX = 6
+LEFT_HIP_INDEX = 11
 
 
 @dataclass(frozen=True)
 class TrainConfig:
     dataset_root: str
-    output_dir: str = "outputs/train"                           # directory for logs and checkpoints
-    split_scheme: str = DEFAULT_SPLIT_SCHEME                    # dataset split scheme
-    epochs: int = 50                                            # training epochs
-    batch_size: int = 64                                        # batch size
-    lr: float = 2e-5                                            # initial learning rate for OneCycleLR
-    max_lr: float = 5e-4                                        # peak learning rate for OneCycleLR
-    weight_decay: float = 5e-4                                  # weight decay
-    smooth_l1_beta: float = 0.1                                 # Smooth L1 loss beta
-    grad_clip_norm: float = 1.0                                 # max gradient norm
-    bone_loss_warmup_epochs: int = 10                           # warmup epochs before bone loss ramps up
-    bone_loss_final_lambda: float = 0.5                         # final bone loss weight
-    scale_norm_loss_weight: float = 0.5                         # scale-normalized pose loss weight
-    limb_vector_loss_weight: float = 0.2                        # limb vector loss weight
-    num_workers: int = 0                                        # number of data loading workers
-    device: str = "cuda"                                        # device to use
+    output_dir: str = "outputs/train"
+    split_scheme: str = DEFAULT_SPLIT_SCHEME
+    csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES
+    epochs: int = 50
+    batch_size: int = 64
+    lr: float = 2e-5
+    max_lr: float = 5e-4
+    weight_decay: float = 5e-4
+    grad_clip_norm: float = 1.0
+    bone_loss_weight: float = 0.5
+    num_workers: int = 0
+    device: str = "cuda"
     seed: int = 42
     subset_size: int | None = None
 
 
-def prepare_model_input(batch: Mapping[str, torch.Tensor], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert one dataloader batch to model input [B, 3, 114, 10] and labels [B, 17, 2]."""
+def parse_csi_features(value: str | Iterable[str]) -> tuple[str, ...]:
+    """Parse and validate the configured CSI feature names outside the batch hot path."""
 
-    csi_amplitude = torch.as_tensor(batch["csi_amplitude"], dtype=torch.float32, device=device)
+    if isinstance(value, str):
+        features = tuple(feature.strip() for feature in value.split(",") if feature.strip())
+    else:
+        features = tuple(value)
+    if not features:
+        raise ValueError("At least one CSI feature must be selected")
+    if len(set(features)) != len(features):
+        raise ValueError(f"CSI features must not contain duplicates: {features}")
+    unsupported = [feature for feature in features if feature not in SUPPORTED_CSI_FEATURES]
+    if unsupported:
+        raise ValueError(f"Unsupported CSI features {unsupported}; supported features are {SUPPORTED_CSI_FEATURES}")
+    return features
+
+
+def csi_feature_string(features: Iterable[str]) -> str:
+    return ",".join(features)
+
+
+def prepare_model_input(
+    batch: Mapping[str, torch.Tensor],
+    device: torch.device,
+    csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert one dataloader batch to model input and labels."""
+
+    feature_tensors = [
+        torch.as_tensor(batch[feature_name], dtype=torch.float32, device=device)
+        for feature_name in csi_features
+    ]
+    model_input = torch.cat(feature_tensors, dim=1)
     keypoints = torch.as_tensor(batch["keypoints"], dtype=torch.float32, device=device)
-
-    if csi_amplitude.ndim != 4 or csi_amplitude.shape[1:] != (3, 114, 10):
-        raise ValueError(f"Expected csi_amplitude shape [B, 3, 114, 10], got {tuple(csi_amplitude.shape)}")
-    if keypoints.ndim != 3 or keypoints.shape[1:] != (17, 2):
-        raise ValueError(f"Expected keypoints shape [B, 17, 2], got {tuple(keypoints.shape)}")
-
-    return csi_amplitude, keypoints                                         # [B, 3, 114, 10], [B, 17, 2]
+    return model_input, keypoints
 
 
 def bone_length_loss(
-    prediction: torch.Tensor,                               # [B, 17, 2]
-    target: torch.Tensor,                                   # [B, 17, 2]
-    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,     # [B, E, 2] keypoints connection
-    beta: float = 0.1,
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    edges: tuple[tuple[int, int], ...] = COCO_BONE_EDGES,
 ) -> torch.Tensor:
-    """Compute Smooth L1 loss between predicted and target bone lengths."""
+    """Compute L1 loss between predicted and target bone lengths."""
 
-    # turn edges connection list into a tensor [E, 2], from what to what
     edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
-    
     pred_lengths = torch.linalg.vector_norm(
-        # dim = 0 -> batch, so the pred_length of all connection is from [x1, y1] to [x2, y2]
         prediction[:, edge_index[:, 0]] - prediction[:, edge_index[:, 1]],
         dim=-1,
     )
     target_lengths = torch.linalg.vector_norm(
-        # dim = 0 -> batch, so the pred_length of all connection is from [x1, y1] to [x2, y2]
         target[:, edge_index[:, 0]] - target[:, edge_index[:, 1]],
         dim=-1,
     )
-    return F.smooth_l1_loss(pred_lengths, target_lengths, beta=beta)
+    return F.l1_loss(pred_lengths, target_lengths)
 
 
-def limb_vector_loss(
+def compute_losses(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,
-    beta: float = 0.1,
-) -> torch.Tensor:
-    """Compute Smooth L1 loss between predicted and target limb vectors."""
+    bone_loss_weight: float = 0.5,
+) -> Dict[str, torch.Tensor]:
+    """Return total, coordinate, and bone losses for one batch."""
 
-    edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
-    pred_vectors = prediction[:, edge_index[:, 1]] - prediction[:, edge_index[:, 0]]
-    target_vectors = target[:, edge_index[:, 1]] - target[:, edge_index[:, 0]]
-    return F.smooth_l1_loss(pred_vectors, target_vectors, beta=beta)
-
-
-def get_joint_loss_weights(device: torch.device) -> torch.Tensor:
-    """Return per-joint loss weights on the requested device."""
-
-    return torch.as_tensor(JOINT_LOSS_WEIGHTS, dtype=torch.float32, device=device)
-
-
-def get_limb_vector_loss_weights(device: torch.device) -> torch.Tensor:
-    """Return per-edge limb loss weights on the requested device."""
-
-    return torch.as_tensor(LIMB_VECTOR_LOSS_WEIGHTS, dtype=torch.float32, device=device)
-
-
-def weighted_mean(losses: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    """Return the weighted average for a batch of per-item losses."""
-
-    normalized_weights = weights / weights.sum()
-    return (losses * normalized_weights.view(1, -1)).sum(dim=-1).mean()
-
-
-def joint_weighted_pose_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    beta: float = 0.1,
-) -> torch.Tensor:
-    """Compute pose loss with higher weights on hard upper-limb joints."""
-
-    per_coordinate = F.smooth_l1_loss(prediction, target, beta=beta, reduction="none")
-    per_joint = per_coordinate.mean(dim=-1)
-    return weighted_mean(per_joint, get_joint_loss_weights(prediction.device))
+    coord = F.l1_loss(prediction, target)
+    bone = bone_length_loss(prediction, target)
+    total = coord + bone_loss_weight * bone
+    return {
+        "loss": total,
+        "coord_loss": coord,
+        "bone_loss": bone,
+    }
 
 
 def compute_torso_scale(target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -188,94 +126,10 @@ def compute_torso_scale(target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor
     ).clamp_min(eps)
 
 
-def scale_normalized_pose_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    beta: float = 0.1,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """Compute Smooth L1 loss after normalizing both poses by torso scale."""
-
-    scale = compute_torso_scale(target, eps=eps).view(-1, 1, 1)
-    return F.smooth_l1_loss(prediction / scale, target / scale, beta=beta)
-
-
-def joint_weighted_scale_normalized_pose_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    beta: float = 0.1,
-    eps: float = 1e-6,
-) -> torch.Tensor:
-    """Compute scale-normalized pose loss with higher weights on hard upper-limb joints."""
-
-    scale = compute_torso_scale(target, eps=eps).view(-1, 1, 1)
-    per_coordinate = F.smooth_l1_loss(
-        prediction / scale,
-        target / scale,
-        beta=beta,
-        reduction="none",
-    )
-    per_joint = per_coordinate.mean(dim=-1)
-    return weighted_mean(per_joint, get_joint_loss_weights(prediction.device))
-
-
-def compute_lambda_bone(epoch: int, config: TrainConfig) -> float:
-    """Linearly ramp the bone loss weight after an initial warmup period."""
-
-    if epoch <= config.bone_loss_warmup_epochs:
-        return 0.0
-    ramp_epochs = max(config.epochs - config.bone_loss_warmup_epochs, 1)
-    progress = min(
-        max(epoch - config.bone_loss_warmup_epochs, 0) / ramp_epochs,
-        1.0,
-    )
-    return config.bone_loss_final_lambda * progress
-
-
-def compute_losses(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    lambda_bone: float = 0.2,
-    beta: float = 0.1,
-    scale_norm_loss_weight: float = 0.5,
-    limb_vector_loss_weight: float = 0.2,
-) -> Dict[str, torch.Tensor]:
-    """Return total, pose, and bone losses for one batch."""
-
-    pose = joint_weighted_pose_loss(prediction, target, beta=beta)          # pose estimation loss
-    scale_norm_pose = joint_weighted_scale_normalized_pose_loss(prediction, target, beta=beta)
-    bone = bone_length_loss(prediction, target, beta=beta)                  # body constraint loss
-    limb = weighted_limb_vector_loss(prediction, target, beta=beta)
-    total = pose + scale_norm_loss_weight * scale_norm_pose + lambda_bone * bone + limb_vector_loss_weight * limb
-    return {
-        "loss": total,
-        "pose_loss": pose,
-        "scale_norm_pose_loss": scale_norm_pose,
-        "bone_loss": bone,
-        "limb_vector_loss": limb,
-    }
-
-
-def weighted_limb_vector_loss(
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    edges: Sequence[tuple[int, int]] = COCO_BONE_EDGES,
-    beta: float = 0.1,
-) -> torch.Tensor:
-    """Compute limb vector loss with higher weights on upper-arm and forearm edges."""
-
-    edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
-    pred_vectors = prediction[:, edge_index[:, 1]] - prediction[:, edge_index[:, 0]]
-    target_vectors = target[:, edge_index[:, 1]] - target[:, edge_index[:, 0]]
-    per_coordinate = F.smooth_l1_loss(pred_vectors, target_vectors, beta=beta, reduction="none")
-    per_edge = per_coordinate.mean(dim=-1)
-    return weighted_mean(per_edge, get_limb_vector_loss_weights(prediction.device))
-
-
 def mpjpe(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Mean per-joint Euclidean distance."""
 
-    return torch.linalg.vector_norm(prediction - target, dim=-1).mean()     # mpjpe metric
+    return torch.linalg.vector_norm(prediction - target, dim=-1).mean()
 
 
 def pck(
@@ -306,7 +160,6 @@ def run_epoch(
     model: nn.Module,
     loader: Iterable[Mapping[str, torch.Tensor]],
     criterion_config: TrainConfig,
-    epoch: int,
     device: torch.device,
     optimizer: AdamW | None = None,
     scheduler: LRScheduler | None = None,
@@ -315,25 +168,21 @@ def run_epoch(
     model.train(is_training)
     totals: Dict[str, float] = {}
     sample_count = 0
-    current_lambda_bone = compute_lambda_bone(epoch, criterion_config)
 
     for batch in loader:
-        model_input, target = prepare_model_input(batch, device)    # load batch data
+        model_input, target = prepare_model_input(batch, device, criterion_config.csi_features)
 
         with torch.set_grad_enabled(is_training):
-            prediction = model(model_input)                         # predict
-            losses = compute_losses(                                # loss
+            prediction = model(model_input)
+            losses = compute_losses(
                 prediction,
                 target,
-                lambda_bone=current_lambda_bone,
-                beta=criterion_config.smooth_l1_beta,
-                scale_norm_loss_weight=criterion_config.scale_norm_loss_weight,
-                limb_vector_loss_weight=criterion_config.limb_vector_loss_weight,
+                bone_loss_weight=criterion_config.bone_loss_weight,
             )
-            metrics = compute_metrics(prediction.detach(), target)  # evaluat the metrics
+            metrics = compute_metrics(prediction.detach(), target)
 
             if is_training:
-                optimizer.zero_grad(set_to_none=True)               # backpropagation
+                optimizer.zero_grad(set_to_none=True)
                 losses["loss"].backward()
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
@@ -344,7 +193,7 @@ def run_epoch(
                     scheduler.step()
 
         batch_size = target.shape[0]
-        sample_count += batch_size                                  # calculate the total loss
+        sample_count += batch_size
         for name, value in {**losses, **metrics}.items():
             totals[name] = totals.get(name, 0.0) + float(value.detach().cpu()) * batch_size
 
@@ -374,7 +223,7 @@ def save_checkpoint(
     )
 
 
-def append_csv_row(path: Path, row: Mapping[str, float | int]) -> None:
+def append_csv_row(path: Path, row: Mapping[str, float | int | str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
     with path.open("a", newline="", encoding="utf-8") as csv_file:
@@ -406,18 +255,19 @@ def run_training(config: TrainConfig) -> None:
     torch.manual_seed(config.seed)
     device = select_device(config.device)
     output_dir = Path(config.output_dir)
+    input_channels = len(config.csi_features) * 3
 
-    loaders = create_data_loaders(              # load data
-        dataset_root=config.dataset_root,       # root
-        batch_size=config.batch_size,           # batch size
+    loaders = create_data_loaders(
+        dataset_root=config.dataset_root,
+        batch_size=config.batch_size,
         seed=config.seed,
-        num_workers=config.num_workers,         # num_workers for data loading
+        num_workers=config.num_workers,
         split_scheme=config.split_scheme,
     )
 
     train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
-    val_loader = maybe_subset_loader(loaders["val"], config.subset_size)    
-    model = WiFlowModel().to(device)
+    val_loader = maybe_subset_loader(loaders["val"], config.subset_size)
+    model = WiFlowModel(input_channels=input_channels).to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = OneCycleLR(
         optimizer,
@@ -430,59 +280,50 @@ def run_training(config: TrainConfig) -> None:
         final_div_factor=1000.0,
     )
 
-    # dry run, sanity check for model forward pass and output shape
     first_batch = next(iter(train_loader))
-    model_input, target = prepare_model_input(first_batch, device)
+    model_input, target = prepare_model_input(first_batch, device, config.csi_features)
     with torch.no_grad():
         output = model(model_input)
     print(f"Sanity shapes: input={tuple(model_input.shape)}, output={tuple(output.shape)}, label={tuple(target.shape)}")
-    
     if output.shape != target.shape:
         raise ValueError(f"Model output shape {tuple(output.shape)} does not match label shape {tuple(target.shape)}")
 
-    # ======== formal training loop ========
-
     best_val_mpjpe = float("inf")
     best_val_pck_0_2 = -float("inf")
+    feature_names = csi_feature_string(config.csi_features)
     log_path = output_dir / "train_log.csv"
     for epoch in range(1, config.epochs + 1):
-        start_time = time.perf_counter()                                # epoch start time
-        lambda_bone = compute_lambda_bone(epoch, config)
+        start_time = time.perf_counter()
         train_metrics = run_epoch(
             model,
             train_loader,
             config,
-            epoch,
             device,
             optimizer=optimizer,
             scheduler=scheduler,
         )
-        val_metrics = run_epoch(model, val_loader, config, epoch, device)      # validation metrics
-        current_lr = optimizer.param_groups[0]["lr"]                    # current learning rate
-        epoch_time = time.perf_counter() - start_time                   # epoch duration
-        
-        row: Dict[str, float | int] = {
+        val_metrics = run_epoch(model, val_loader, config, device)
+        current_lr = optimizer.param_groups[0]["lr"]
+        epoch_time = time.perf_counter() - start_time
+
+        row: Dict[str, float | int | str] = {
             "epoch": epoch,
-            "lambda_bone": lambda_bone,
+            "csi_features": feature_names,
             "train_loss": train_metrics["loss"],
-            "train_pose_loss": train_metrics["pose_loss"],
-            "train_scale_norm_pose_loss": train_metrics["scale_norm_pose_loss"],
+            "train_coord_loss": train_metrics["coord_loss"],
             "train_bone_loss": train_metrics["bone_loss"],
-            "train_limb_vector_loss": train_metrics["limb_vector_loss"],
             "train_mpjpe": train_metrics["mpjpe"],
             "train_pck_0_2": train_metrics["pck_0_2"],
             "val_loss": val_metrics["loss"],
-            "val_pose_loss": val_metrics["pose_loss"],
-            "val_scale_norm_pose_loss": val_metrics["scale_norm_pose_loss"],
+            "val_coord_loss": val_metrics["coord_loss"],
             "val_bone_loss": val_metrics["bone_loss"],
-            "val_limb_vector_loss": val_metrics["limb_vector_loss"],
             "val_mpjpe": val_metrics["mpjpe"],
             "val_pck_0_2": val_metrics["pck_0_2"],
             "val_pck_0_5": val_metrics["pck_0_5"],
             "current_lr": current_lr,
             "epoch_time": epoch_time,
         }
-        append_csv_row(log_path, row)                                   # add to csv log
+        append_csv_row(log_path, row)
 
         save_checkpoint(
             output_dir / "last.pth",
@@ -493,7 +334,6 @@ def run_training(config: TrainConfig) -> None:
             best_metric=val_metrics["mpjpe"],
             config=config,
         )
-        
         if val_metrics["mpjpe"] < best_val_mpjpe:
             best_val_mpjpe = val_metrics["mpjpe"]
             save_checkpoint(
@@ -532,22 +372,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", required=True, help="Path to the MM-Fi HDF5 dataset or its parent directory.")
     parser.add_argument("--output-dir", default="outputs/train", help="Directory for logs and checkpoints.")
     parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
+    parser.add_argument("--csi-features", default=csi_feature_string(DEFAULT_CSI_FEATURES))
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max-lr", type=float, default=5e-4)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
-    parser.add_argument("--smooth-l1-beta", type=float, default=0.1)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
-    parser.add_argument("--bone-loss-warmup-epochs", type=int, default=10)
-    parser.add_argument("--bone-loss-final-lambda", type=float, default=0.5)
-    parser.add_argument("--scale-norm-loss-weight", type=float, default=0.5)
-    parser.add_argument("--limb-vector-loss-weight", type=float, default=0.2)
+    parser.add_argument("--bone-loss-weight", type=float, default=0.5)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--subset-size", type=int, default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.csi_features = parse_csi_features(args.csi_features)
+    return args
 
 
 def main() -> None:

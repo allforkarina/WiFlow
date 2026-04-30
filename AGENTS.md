@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
 - One packed HDF5 can now hold both `action_env` and `frame_random` split schemes; training and evaluation default to `action_env` and can switch with `--split-scheme`.
-- `models/`: PyTorch model code, including the full WiFlow model, a structured CSI token encoder, a joint-query cross-attention decoder, asymmetric CNN, and axial attention stages. The active encoder path is asymmetric CNN -> axial attention -> flattened CSI tokens -> joint-query decoder.
+- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder, axial attention encoder, attention pooler, skeleton-aware decoder, and shared COCO17 skeleton topology. The active model path is CSI feature concat -> spatial encoder -> axial encoder -> attention pooler -> skeleton-aware decoder.
 - `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
 - `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.
@@ -58,7 +58,7 @@ Run the default training configuration:
 python train.py --dataset-root data\mmfi_pose.h5 --epochs 50 --batch-size 64 --output-dir outputs\train
 ```
 
-The default training configuration uses `OneCycleLR`, gradient clipping, a staged bone-loss curriculum, and stronger AdamW weight decay than the original baseline. The model now keeps 29 spatial CSI tokens before the joint-query decoder instead of collapsing them to 17 slots inside the encoder.
+The default training configuration uses `csi_amplitude,csi_phase_cos` input features, `OneCycleLR`, gradient clipping, `coord_l1 + 0.5 * bone_l1`, and stronger AdamW weight decay than the original baseline. Use `--csi-features csi_amplitude` for an amplitude-only run.
 
 Run the frame-random split configuration:
 

@@ -10,13 +10,14 @@ from eval import (
     build_joint_metric_rows,
     compute_joint_errors,
     compute_joint_pck,
+    load_checkpoint_model,
     plot_skeleton,
     safe_stem,
     update_group_metric_totals,
     update_metric_totals,
     write_csv_rows,
 )
-from train import COCO_BONE_EDGES
+from models import COCO_BONE_EDGES, WiFlowModel
 
 matplotlib.use("Agg")
 
@@ -101,3 +102,33 @@ def test_write_csv_rows_writes_header_and_rows(tmp_path) -> None:
     contents = path.read_text(encoding="utf-8")
     assert "joint_index,sample_count,mpjpe,pck_0_2" in contents
     assert "0,2,1.0,0.5" in contents
+
+
+def test_load_checkpoint_model_uses_train_config_csi_features(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    model = WiFlowModel(input_channels=6)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "train_config": {"csi_features": ("csi_amplitude", "csi_phase_cos")},
+        },
+        checkpoint_path,
+    )
+
+    loaded_model, csi_features = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
+
+    assert isinstance(loaded_model, WiFlowModel)
+    assert loaded_model.input_channels == 6
+    assert csi_features == ("csi_amplitude", "csi_phase_cos")
+
+
+def test_load_checkpoint_model_requires_csi_features(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    torch.save({"model_state_dict": WiFlowModel().state_dict(), "train_config": {}}, checkpoint_path)
+
+    try:
+        load_checkpoint_model(checkpoint_path, torch.device("cpu"))
+    except KeyError as exc:
+        assert "csi_features" in str(exc)
+    else:
+        raise AssertionError("Expected checkpoint loading to require train_config.csi_features")

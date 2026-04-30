@@ -1,13 +1,17 @@
-from .wiflow_encoder_asymmetric_cnn_layer2 import WiFlowEncoderAsymmetricCNNLayer2
-from .wiflow_encoder_axial_attention_layer3 import WiFlowEncoderAxialAttentionLayer3
-from .wiflow_encoder import WiFlowEncoder
-from .wiflow_decoder import WiFlowDecoder
+from .skeleton import COCO_BONE_EDGES, NUM_COCO_KEYPOINTS, build_normalized_adjacency
+from .wiflow_attention_pooler import WiFlowAttentionPooler
+from .wiflow_axial_encoder import WiFlowAxialEncoder
 from .wiflow_model import WiFlowModel
+from .wiflow_skeleton_decoder import WiFlowSkeletonDecoder
+from .wiflow_spatial_encoder import WiFlowSpatialEncoder
 
 __all__ = [
     "WiFlowModel",
-    "WiFlowEncoder",
-    "WiFlowDecoder",
-    "WiFlowEncoderAsymmetricCNNLayer2",
-    "WiFlowEncoderAxialAttentionLayer3",
+    "WiFlowSpatialEncoder",
+    "WiFlowAxialEncoder",
+    "WiFlowAttentionPooler",
+    "WiFlowSkeletonDecoder",
+    "COCO_BONE_EDGES",
+    "NUM_COCO_KEYPOINTS",
+    "build_normalized_adjacency",
 ]

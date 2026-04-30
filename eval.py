@@ -12,21 +12,25 @@ from matplotlib.axes import Axes
 from torch.utils.data import DataLoader
 
 from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, MMFiPoseDataset, denormalize_keypoints
-from models import WiFlowModel
-from train import COCO_BONE_EDGES, compute_metrics, compute_torso_scale, prepare_model_input, select_device
+from models import COCO_BONE_EDGES, WiFlowModel
+from train import compute_metrics, compute_torso_scale, prepare_model_input, select_device
 
 
-def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> WiFlowModel:
-    """Load a trained WiFlow model from a checkpoint."""
+def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> tuple[WiFlowModel, tuple[str, ...]]:
+    """Load a trained WiFlow model and its CSI feature configuration from a checkpoint."""
 
     checkpoint = torch.load(checkpoint_path, map_location=device)   # load the checkpoint
     if "model_state_dict" not in checkpoint:
         raise KeyError(f"Checkpoint is missing model_state_dict: {checkpoint_path}")
+    train_config = checkpoint.get("train_config")
+    if not isinstance(train_config, Mapping) or "csi_features" not in train_config:
+        raise KeyError(f"Checkpoint is missing train_config.csi_features: {checkpoint_path}")
 
-    model = WiFlowModel().to(device)                                # load the model
+    csi_features = tuple(train_config["csi_features"])
+    model = WiFlowModel(input_channels=len(csi_features) * 3).to(device)   # load the model
     model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
     model.eval()                                                    # eval mode
-    return model
+    return model, csi_features
 
 
 def plot_skeleton(
@@ -166,6 +170,7 @@ def collect_metric_breakdowns(
     model: WiFlowModel,
     loader: DataLoader,
     device: torch.device,
+    csi_features: tuple[str, ...],
 ) -> tuple[list[dict[str, float | int]], list[dict[str, float | int | str]], list[dict[str, float | int | str]]]:
     """Collect per-joint, per-action, and per-environment metrics for one split."""
 
@@ -176,7 +181,7 @@ def collect_metric_breakdowns(
 
     with torch.no_grad():
         for batch in loader:
-            model_input, target = prepare_model_input(batch, device)
+            model_input, target = prepare_model_input(batch, device, csi_features)
             prediction = model(model_input)
             joint_errors = compute_joint_errors(prediction, target).detach().cpu()
             joint_pck = compute_joint_pck(prediction, target).detach().cpu()
@@ -196,6 +201,7 @@ def evaluate_model(
     model: WiFlowModel,
     loader: DataLoader,
     device: torch.device,
+    csi_features: tuple[str, ...],
 ) -> Dict[str, float]:
     """Evaluate the model on one dataloader and return averaged metrics."""
 
@@ -204,7 +210,7 @@ def evaluate_model(
 
     with torch.no_grad():
         for batch in loader:
-            model_input, target = prepare_model_input(batch, device)    # get test data
+            model_input, target = prepare_model_input(batch, device, csi_features)    # get test data
             prediction = model(model_input)                             # model prediction
             metrics = compute_metrics(prediction, target)               # compute metrics for the batch
             batch_size = target.shape[0]
@@ -219,6 +225,7 @@ def save_visualizations(
     dataset: MMFiPoseDataset,
     output_dir: Path,
     device: torch.device,
+    csi_features: tuple[str, ...],
     max_visualizations: int | None = None,
 ) -> int:
     """Save one CSI and skeleton visualization for each action/environment pair."""
@@ -238,7 +245,12 @@ def save_visualizations(
             break
 
         # sample and predict
-        model_input = torch.as_tensor(sample["csi_amplitude"], dtype=torch.float32, device=device).unsqueeze(0)
+        batch = {
+            feature_name: torch.as_tensor(sample[feature_name], dtype=torch.float32).unsqueeze(0)
+            for feature_name in csi_features
+        }
+        batch["keypoints"] = torch.as_tensor(sample["keypoints"], dtype=torch.float32).unsqueeze(0)
+        model_input, _ = prepare_model_input(batch, device, csi_features)
         with torch.no_grad():
             prediction = model(model_input).detach().cpu().numpy()[0]
 
@@ -256,9 +268,11 @@ def save_visualizations(
         )
 
         fig, axes = plt.subplots(3, 1, figsize=(6, 12))
-        csi_heatmap = model_input.detach().cpu().numpy()[0].reshape(342, 10)
+        csi_heatmap = np.asarray(sample["csi_amplitude"], dtype=np.float32).reshape(342, 10)
         axes[0].imshow(csi_heatmap, aspect="auto", cmap="jet")
-        axes[0].set_title(f"CSI Amplitude Heatmap ({action} in {environment})")
+        axes[0].set_title(
+            f"CSI Amplitude Heatmap ({action} in {environment}; features={','.join(csi_features)})"
+        )
         axes[0].set_ylabel("Sub-channels (Flattened)")
         axes[0].set_xlabel("Packet Window (T=10)")
 
@@ -291,7 +305,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = select_device(args.device)
-    model = load_checkpoint_model(args.checkpoint, device)
+    model, csi_features = load_checkpoint_model(args.checkpoint, device)
 
     test_dataset = MMFiPoseDataset(
         dataset_root=args.dataset_root,
@@ -305,7 +319,7 @@ def main() -> None:
         num_workers=args.num_workers,
     )
 
-    metrics = evaluate_model(model, test_loader, device)
+    metrics = evaluate_model(model, test_loader, device, csi_features)
     print("--- Test Metrics ---")
     for name in sorted(metrics):
         print(f"{name}: {metrics[name]:.6f}")
@@ -314,6 +328,7 @@ def main() -> None:
         model,
         test_loader,
         device,
+        csi_features,
     )
     output_dir = Path(args.output_dir)
     write_csv_rows(output_dir / "per_joint_metrics.csv", joint_rows)
@@ -325,6 +340,7 @@ def main() -> None:
         test_dataset,
         output_dir,
         device,
+        csi_features,
         max_visualizations=args.max_visualizations,
     )
     print(f"Saved visualizations: {saved_count}")
