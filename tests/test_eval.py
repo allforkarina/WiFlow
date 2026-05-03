@@ -113,6 +113,7 @@ def test_load_checkpoint_model_uses_train_config(tmp_path) -> None:
             "train_config": {
                 "csi_features": ("csi_amplitude", "csi_phase_cos"),
                 "axial_mode": "parallel_sum",
+                "sequence_length": 1,
             },
         },
         checkpoint_path,
@@ -123,7 +124,50 @@ def test_load_checkpoint_model_uses_train_config(tmp_path) -> None:
     assert isinstance(loaded_model, WiFlowModel)
     assert loaded_model.input_channels == 6
     assert loaded_model.axial_mode == "parallel_sum"
+    assert loaded_model.sequence_length == 1
     assert csi_features == ("csi_amplitude", "csi_phase_cos")
+
+
+def test_load_checkpoint_model_uses_sequence_length(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    model = WiFlowModel(input_channels=6, sequence_length=8)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "train_config": {
+                "csi_features": ("csi_amplitude", "csi_phase_cos"),
+                "sequence_length": 8,
+            },
+        },
+        checkpoint_path,
+    )
+
+    loaded_model, _ = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
+
+    assert loaded_model.sequence_length == 8
+    assert loaded_model.temporal_encoder is not None
+
+
+def test_load_checkpoint_model_rejects_temporal_checkpoint_for_frame_random(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    model = WiFlowModel(input_channels=6, sequence_length=8)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "train_config": {
+                "csi_features": ("csi_amplitude", "csi_phase_cos"),
+                "sequence_length": 8,
+            },
+        },
+        checkpoint_path,
+    )
+
+    try:
+        load_checkpoint_model(checkpoint_path, torch.device("cpu"), split_scheme="frame_random")
+    except ValueError as exc:
+        assert "Temporal checkpoints" in str(exc)
+    else:
+        raise AssertionError("Expected temporal checkpoint loading to reject frame_random evaluation")
 
 
 def test_load_checkpoint_model_requires_csi_features(tmp_path) -> None:

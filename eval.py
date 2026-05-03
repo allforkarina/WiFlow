@@ -16,7 +16,11 @@ from models import COCO_BONE_EDGES, WiFlowModel
 from train import compute_metrics, compute_torso_scale, prepare_model_input, select_device
 
 
-def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> tuple[WiFlowModel, tuple[str, ...]]:
+def load_checkpoint_model(
+    checkpoint_path: str | Path,
+    device: torch.device,
+    split_scheme: str = DEFAULT_SPLIT_SCHEME,
+) -> tuple[WiFlowModel, tuple[str, ...]]:
     """Load a trained WiFlow model and its CSI feature configuration from a checkpoint."""
 
     checkpoint = torch.load(checkpoint_path, map_location=device)   # load the checkpoint
@@ -28,7 +32,14 @@ def load_checkpoint_model(checkpoint_path: str | Path, device: torch.device) -> 
 
     csi_features = tuple(train_config["csi_features"])
     axial_mode = str(train_config.get("axial_mode", "spatial_then_temporal"))
-    model = WiFlowModel(input_channels=len(csi_features) * 3, axial_mode=axial_mode).to(device)   # load the model
+    sequence_length = int(train_config.get("sequence_length", 1))
+    if split_scheme == "frame_random" and sequence_length > 1:
+        raise ValueError("Temporal checkpoints require split_scheme='action_env'; frame_random uses single-frame evaluation")
+    model = WiFlowModel(
+        input_channels=len(csi_features) * 3,
+        axial_mode=axial_mode,
+        sequence_length=sequence_length,
+    ).to(device)                                                  # load the model
     model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
     model.eval()                                                    # eval mode
     return model, csi_features
@@ -269,7 +280,10 @@ def save_visualizations(
         )
 
         fig, axes = plt.subplots(3, 1, figsize=(6, 12))
-        csi_heatmap = np.asarray(sample["csi_amplitude"], dtype=np.float32).reshape(342, 10)
+        csi_amplitude = np.asarray(sample["csi_amplitude"], dtype=np.float32)
+        if csi_amplitude.ndim == 4:
+            csi_amplitude = csi_amplitude[dataset.sequence_length // 2]
+        csi_heatmap = csi_amplitude.reshape(342, 10)
         axes[0].imshow(csi_heatmap, aspect="auto", cmap="jet")
         axes[0].set_title(
             f"CSI Amplitude Heatmap ({action} in {environment}; features={','.join(csi_features)})"
@@ -306,12 +320,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = select_device(args.device)
-    model, csi_features = load_checkpoint_model(args.checkpoint, device)
+    model, csi_features = load_checkpoint_model(args.checkpoint, device, split_scheme=args.split_scheme)
 
     test_dataset = MMFiPoseDataset(
         dataset_root=args.dataset_root,
         split="test",
         split_scheme=args.split_scheme,
+        sequence_length=model.sequence_length,
     )
     test_loader = DataLoader(
         test_dataset,

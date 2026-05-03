@@ -4,6 +4,7 @@ from .wiflow_axial_encoder import AXIAL_ENCODER_MODES, WiFlowAxialEncoder
 from .wiflow_model import WiFlowModel
 from .wiflow_skeleton_decoder import WiFlowSkeletonDecoder
 from .wiflow_spatial_encoder import WiFlowSpatialEncoder
+from .wiflow_temporal_encoder import WiFlowTemporalEncoder
 
 __all__ = [
     "WiFlowModel",
@@ -12,6 +13,7 @@ __all__ = [
     "AXIAL_ENCODER_MODES",
     "WiFlowAttentionPooler",
     "WiFlowSkeletonDecoder",
+    "WiFlowTemporalEncoder",
     "COCO_BONE_EDGES",
     "NUM_COCO_KEYPOINTS",
     "build_normalized_adjacency",

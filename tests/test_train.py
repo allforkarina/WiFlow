@@ -11,6 +11,7 @@ from train import (
     compute_losses,
     compute_metrics,
     csi_feature_string,
+    effective_sequence_length,
     parse_args,
     parse_csi_features,
     prepare_model_input,
@@ -66,6 +67,23 @@ def test_prepare_model_input_supports_amp_only() -> None:
     assert target.shape == (2, 17, 2)
 
 
+def test_prepare_model_input_concatenates_sequence_features() -> None:
+    amplitude = torch.ones(2, 8, 3, 114, 10)
+    phase_cos = torch.zeros(2, 8, 3, 114, 10)
+    batch = {
+        "csi_amplitude": amplitude,
+        "csi_phase_cos": phase_cos,
+        "keypoints": torch.randn(2, 17, 2),
+    }
+
+    model_input, target = prepare_model_input(batch, torch.device("cpu"), DEFAULT_CSI_FEATURES)
+
+    assert model_input.shape == (2, 8, 6, 114, 10)
+    assert target.shape == (2, 17, 2)
+    assert torch.equal(model_input[:, :, :3], amplitude)
+    assert torch.equal(model_input[:, :, 3:], phase_cos)
+
+
 def test_bone_length_loss_is_zero_for_matching_skeletons() -> None:
     target = torch.randn(3, 17, 2)
 
@@ -106,11 +124,24 @@ def test_train_config_uses_refactor_defaults() -> None:
     assert config.split_scheme == DEFAULT_SPLIT_SCHEME
     assert config.csi_features == DEFAULT_CSI_FEATURES
     assert config.axial_mode == "spatial_then_temporal"
+    assert config.sequence_length == 1
     assert config.lr == 2e-5
     assert config.max_lr == 5e-4
     assert config.weight_decay == 5e-4
     assert config.grad_clip_norm == 1.0
     assert config.bone_loss_weight == 0.5
+
+
+def test_effective_sequence_length_keeps_action_env_and_downgrades_frame_random() -> None:
+    assert effective_sequence_length("action_env", 8) == 8
+    assert effective_sequence_length("frame_random", 8) == 1
+
+    try:
+        effective_sequence_length("action_env", 0)
+    except ValueError as exc:
+        assert "at least 1" in str(exc)
+    else:
+        raise AssertionError("Expected effective_sequence_length to reject non-positive values")
 
 
 def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
@@ -122,9 +153,12 @@ def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
             "data/mmfi_pose.h5",
             "--axial-mode",
             "parallel_concat",
+            "--sequence-length",
+            "8",
         ],
     )
 
     args = parse_args()
 
     assert args.axial_mode == "parallel_concat"
+    assert args.sequence_length == 8

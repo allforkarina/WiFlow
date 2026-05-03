@@ -125,6 +125,43 @@ def _write_legacy_h5(path: Path) -> None:
         h5_file.attrs["amplitude_train_max"] = 1.0
 
 
+def _write_sequence_h5(path: Path) -> None:
+    keypoints = np.zeros((4, *KEYPOINT_SHAPE), dtype=np.float32)
+    amplitude = np.zeros((4, *CSI_SHAPE), dtype=np.float32)
+    phase = np.zeros((4, *CSI_SHAPE), dtype=np.float32)
+    phase_cos = np.zeros((4, *CSI_SHAPE), dtype=np.float32)
+    for frame_index in range(4):
+        keypoints[frame_index] = float(frame_index)
+        amplitude[frame_index] = float(frame_index)
+        phase[frame_index] = float(frame_index + 10)
+        phase_cos[frame_index] = float(frame_index + 20)
+    string_dtype = h5py.string_dtype(encoding="utf-8")
+
+    with h5py.File(path, "w") as h5_file:
+        h5_file.create_dataset("keypoints", data=keypoints)
+        h5_file.create_dataset("csi_amplitude", data=amplitude)
+        h5_file.create_dataset("csi_phase", data=phase)
+        h5_file.create_dataset("csi_phase_cos", data=phase_cos)
+        h5_file.create_dataset("action", data=np.array(["A01"] * 4, dtype=string_dtype))
+        h5_file.create_dataset("sample", data=np.array(["S01"] * 4, dtype=string_dtype))
+        h5_file.create_dataset("environment", data=np.array(["env1"] * 4, dtype=string_dtype))
+        h5_file.create_dataset(
+            "frame_id",
+            data=np.array(["frame001", "frame002", "frame003", "frame004"], dtype=string_dtype),
+        )
+        h5_file.create_dataset("train_indices", data=np.array([0, 1, 2, 3], dtype=np.int64))
+        h5_file.create_dataset("val_indices", data=np.array([], dtype=np.int64))
+        h5_file.create_dataset("test_indices", data=np.array([], dtype=np.int64))
+        h5_file.create_dataset("action_env_train_indices", data=np.array([0, 1, 2, 3], dtype=np.int64))
+        h5_file.create_dataset("action_env_val_indices", data=np.array([], dtype=np.int64))
+        h5_file.create_dataset("action_env_test_indices", data=np.array([], dtype=np.int64))
+        h5_file.attrs["storage_format"] = RAW_STORAGE_ATTR
+        h5_file.attrs["keypoint_x_scale"] = 1.0
+        h5_file.attrs["keypoint_y_scale"] = 1.0
+        h5_file.attrs["amplitude_train_min"] = 0.0
+        h5_file.attrs["amplitude_train_max"] = 3.0
+
+
 def test_build_sample_splits_keeps_each_sample_in_one_split(monkeypatch) -> None:
     sequences = _make_sample_sequences()
     monkeypatch.setattr("dataloader.discover_sample_sequences", lambda dataset_root: sequences)
@@ -189,6 +226,30 @@ def test_mmfi_pose_dataset_supports_legacy_action_env_only(tmp_path) -> None:
 
     with pytest.raises(KeyError):
         MMFiPoseDataset(dataset_root=dataset_path, split="train", split_scheme="frame_random")
+
+
+def test_mmfi_pose_dataset_returns_centered_sequence_with_clamped_boundaries(tmp_path) -> None:
+    dataset_path = tmp_path / "sequence.h5"
+    _write_sequence_h5(dataset_path)
+
+    dataset = MMFiPoseDataset(
+        dataset_root=dataset_path,
+        split="train",
+        split_scheme="action_env",
+        sequence_length=4,
+    )
+
+    first_sample = dataset[0]
+    middle_sample = dataset[2]
+
+    assert first_sample["keypoints"].shape == KEYPOINT_SHAPE
+    assert first_sample["csi_amplitude"].shape == (4, *CSI_SHAPE)
+    assert first_sample["csi_phase"].shape == (4, *CSI_SHAPE)
+    assert first_sample["csi_phase_cos"].shape == (4, *CSI_SHAPE)
+    assert np.allclose(first_sample["keypoints"], 0.0)
+    assert np.allclose(first_sample["csi_amplitude"][:, 0, 0, 0], [0.0, 0.0, 0.0, 1.0 / 3.0])
+    assert np.allclose(middle_sample["keypoints"], 2.0)
+    assert np.allclose(middle_sample["csi_phase"][:, 0, 0, 0], [10.0, 11.0, 12.0, 13.0])
 
 
 def test_summarize_splits_uses_requested_scheme(tmp_path) -> None:

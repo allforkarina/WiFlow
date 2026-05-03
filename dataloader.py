@@ -638,13 +638,22 @@ def build_h5_dataset(
 class MMFiPoseDataset:
     """Frame-level HDF5 dataset that returns aligned pose labels and CSI tensors."""
 
-    def __init__(self, dataset_root: str | Path, split: str, split_scheme: str = DEFAULT_SPLIT_SCHEME) -> None:
+    def __init__(
+        self,
+        dataset_root: str | Path,
+        split: str,
+        split_scheme: str = DEFAULT_SPLIT_SCHEME,
+        sequence_length: int = 1,
+    ) -> None:
         if split not in SPLIT_NAMES:
             raise ValueError(f"split must be one of {SPLIT_NAMES}, got {split}")
+        if sequence_length < 1:
+            raise ValueError("sequence_length must be at least 1")
 
         self.dataset_root = resolve_h5_dataset_path(dataset_root)
         self.split = split
         self.split_scheme = validate_split_scheme(split_scheme)
+        self.sequence_length = sequence_length
         self._h5_file: h5py.File | None = None
 
         with h5py.File(self.dataset_root, "r") as h5_file:
@@ -689,6 +698,7 @@ class MMFiPoseDataset:
                     h5_file.attrs.get("amplitude_train_max", 1.0),
                 )
             )
+            self.sequence_frame_indices = self._build_sequence_frame_indices(h5_file)
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -702,6 +712,46 @@ class MMFiPoseDataset:
         if self._h5_file is None:
             self._h5_file = h5py.File(self.dataset_root, "r")
         return self._h5_file
+
+    def _build_sequence_frame_indices(self, h5_file: h5py.File) -> np.ndarray | None:
+        if self.sequence_length == 1:
+            return None
+
+        sequence_groups: Dict[tuple[str, str], list[tuple[str, int]]] = {}
+        for frame_index in range(len(h5_file["action"])):
+            group_key = (
+                _decode_string(h5_file["action"][frame_index]),
+                _decode_string(h5_file["sample"][frame_index]),
+            )
+            sequence_groups.setdefault(group_key, []).append(
+                (_decode_string(h5_file["frame_id"][frame_index]), frame_index)
+            )
+
+        sorted_sequences: Dict[tuple[str, str], list[int]] = {
+            group_key: [frame_index for _, frame_index in sorted(group_records, key=lambda item: item[0])]
+            for group_key, group_records in sequence_groups.items()
+        }
+        positions_by_frame_index = {
+            frame_index: position
+            for sequence_indices in sorted_sequences.values()
+            for position, frame_index in enumerate(sequence_indices)
+        }
+
+        target_position = self.sequence_length // 2
+        sequence_frame_indices = np.empty((len(self.indices), self.sequence_length), dtype=np.int64)
+        for dataset_index, frame_index in enumerate(self.indices):
+            frame_index = int(frame_index)
+            group_key = (
+                _decode_string(h5_file["action"][frame_index]),
+                _decode_string(h5_file["sample"][frame_index]),
+            )
+            sequence_indices = sorted_sequences[group_key]
+            frame_position = positions_by_frame_index[frame_index]
+            for sequence_offset in range(self.sequence_length):
+                position = frame_position + sequence_offset - target_position
+                position = min(max(position, 0), len(sequence_indices) - 1)
+                sequence_frame_indices[dataset_index, sequence_offset] = sequence_indices[position]
+        return sequence_frame_indices
 
     def close(self) -> None:
         if self._h5_file is not None:
@@ -717,7 +767,21 @@ class MMFiPoseDataset:
         h5_file = self._get_h5_file()
         frame_index = int(self.indices[index])
         keypoints = np.asarray(h5_file["keypoints"][frame_index], dtype=np.float32)
-        csi_amplitude = np.asarray(h5_file["csi_amplitude"][frame_index], dtype=np.float32)
+        if self.sequence_frame_indices is None:
+            csi_amplitude = np.asarray(h5_file["csi_amplitude"][frame_index], dtype=np.float32)
+            csi_phase = np.asarray(h5_file["csi_phase"][frame_index], dtype=np.float32)
+            csi_phase_cos = np.asarray(h5_file["csi_phase_cos"][frame_index], dtype=np.float32)
+        else:
+            csi_frame_indices = self.sequence_frame_indices[index]
+            csi_amplitude = np.stack(
+                [np.asarray(h5_file["csi_amplitude"][csi_index], dtype=np.float32) for csi_index in csi_frame_indices]
+            )
+            csi_phase = np.stack(
+                [np.asarray(h5_file["csi_phase"][csi_index], dtype=np.float32) for csi_index in csi_frame_indices]
+            )
+            csi_phase_cos = np.stack(
+                [np.asarray(h5_file["csi_phase_cos"][csi_index], dtype=np.float32) for csi_index in csi_frame_indices]
+            )
         if self.storage_format == RAW_STORAGE_ATTR:
             keypoints = _normalize_keypoints(
                 keypoints,
@@ -737,8 +801,8 @@ class MMFiPoseDataset:
             "frame_id": _decode_string(h5_file["frame_id"][frame_index]),
             "keypoints": keypoints,
             "csi_amplitude": csi_amplitude,
-            "csi_phase": np.asarray(h5_file["csi_phase"][frame_index], dtype=np.float32),
-            "csi_phase_cos": np.asarray(h5_file["csi_phase_cos"][frame_index], dtype=np.float32),
+            "csi_phase": csi_phase,
+            "csi_phase_cos": csi_phase_cos,
         }
 
 
@@ -752,6 +816,7 @@ def create_data_loader(
     shuffle: Optional[bool] = None,
     split_scheme: str = DEFAULT_SPLIT_SCHEME,
     split_ratios: Optional[Dict[str, int]] = None,
+    sequence_length: int = 1,
 ):
     """Create one PyTorch DataLoader for the requested HDF5 split."""
 
@@ -763,7 +828,12 @@ def create_data_loader(
 
     del seed, split_ratios  # pre-allocated while build .h5 file
 
-    dataset = MMFiPoseDataset(dataset_root=dataset_root, split=split, split_scheme=split_scheme)
+    dataset = MMFiPoseDataset(
+        dataset_root=dataset_root,
+        split=split,
+        split_scheme=split_scheme,
+        sequence_length=sequence_length,
+    )
     should_shuffle = shuffle if shuffle is not None else split == "train"
     return DataLoader(
         dataset,
@@ -780,6 +850,7 @@ def create_data_loaders(
     num_workers: int = 0,
     split_scheme: str = DEFAULT_SPLIT_SCHEME,
     split_ratios: Optional[Dict[str, int]] = None,
+    sequence_length: int = 1,
 ):
     """Create train/val/test DataLoaders from the same HDF5 dataset."""
 
@@ -792,6 +863,7 @@ def create_data_loaders(
             num_workers=num_workers,
             split_scheme=split_scheme,
             split_ratios=split_ratios,
+            sequence_length=sequence_length,
         )
         for split in SPLIT_NAMES
     }

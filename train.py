@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Dict, Iterable, Mapping
 
@@ -32,6 +32,7 @@ class TrainConfig:
     split_scheme: str = DEFAULT_SPLIT_SCHEME
     csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES
     axial_mode: str = "spatial_then_temporal"
+    sequence_length: int = 1
     epochs: int = 50
     batch_size: int = 64
     lr: float = 2e-5
@@ -77,9 +78,20 @@ def prepare_model_input(
         torch.as_tensor(batch[feature_name], dtype=torch.float32, device=device)
         for feature_name in csi_features
     ]
-    model_input = torch.cat(feature_tensors, dim=1)
+    feature_ndim = feature_tensors[0].ndim
+    if feature_ndim not in (4, 5):
+        raise ValueError(f"Expected CSI feature tensors with 4 or 5 dimensions, got {feature_ndim}")
+    model_input = torch.cat(feature_tensors, dim=2 if feature_ndim == 5 else 1)
     keypoints = torch.as_tensor(batch["keypoints"], dtype=torch.float32, device=device)
     return model_input, keypoints
+
+
+def effective_sequence_length(split_scheme: str, sequence_length: int) -> int:
+    if sequence_length < 1:
+        raise ValueError("sequence_length must be at least 1")
+    if split_scheme == "frame_random":
+        return 1
+    return sequence_length
 
 
 def bone_length_loss(
@@ -253,6 +265,14 @@ def select_device(device_name: str) -> torch.device:
 
 
 def run_training(config: TrainConfig) -> None:
+    effective_length = effective_sequence_length(config.split_scheme, config.sequence_length)
+    if effective_length != config.sequence_length:
+        print(
+            "frame_random split uses single-frame behavior; "
+            f"overriding sequence_length={config.sequence_length} to 1"
+        )
+        config = replace(config, sequence_length=effective_length)
+
     torch.manual_seed(config.seed)
     device = select_device(config.device)
     output_dir = Path(config.output_dir)
@@ -264,11 +284,16 @@ def run_training(config: TrainConfig) -> None:
         seed=config.seed,
         num_workers=config.num_workers,
         split_scheme=config.split_scheme,
+        sequence_length=config.sequence_length,
     )
 
     train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
     val_loader = maybe_subset_loader(loaders["val"], config.subset_size)
-    model = WiFlowModel(input_channels=input_channels, axial_mode=config.axial_mode).to(device)
+    model = WiFlowModel(
+        input_channels=input_channels,
+        axial_mode=config.axial_mode,
+        sequence_length=config.sequence_length,
+    ).to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = OneCycleLR(
         optimizer,
@@ -311,6 +336,7 @@ def run_training(config: TrainConfig) -> None:
             "epoch": epoch,
             "csi_features": feature_names,
             "axial_mode": config.axial_mode,
+            "sequence_length": config.sequence_length,
             "train_loss": train_metrics["loss"],
             "train_coord_loss": train_metrics["coord_loss"],
             "train_bone_loss": train_metrics["bone_loss"],
@@ -376,6 +402,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
     parser.add_argument("--csi-features", default=csi_feature_string(DEFAULT_CSI_FEATURES))
     parser.add_argument("--axial-mode", default="spatial_then_temporal", choices=AXIAL_ENCODER_MODES)
+    parser.add_argument("--sequence-length", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-5)
