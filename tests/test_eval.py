@@ -145,7 +145,7 @@ def test_load_checkpoint_model_uses_sequence_length(tmp_path) -> None:
     loaded_model, _ = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
 
     assert loaded_model.sequence_length == 8
-    assert loaded_model.temporal_encoder is not None
+    assert loaded_model.temporal_fuser is not None
 
 
 def test_load_checkpoint_model_rejects_temporal_checkpoint_for_frame_random(tmp_path) -> None:

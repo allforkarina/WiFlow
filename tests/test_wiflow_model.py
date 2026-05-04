@@ -3,10 +3,10 @@ from __future__ import annotations
 import torch
 
 from models import (
-    WiFlowAttentionPooler,
     WiFlowAxialEncoder,
+    WiFlowJointDecoder,
     WiFlowModel,
-    WiFlowSkeletonDecoder,
+    WiFlowSpatialTemporalFuser,
     WiFlowSpatialEncoder,
 )
 
@@ -19,7 +19,7 @@ def test_wiflow_model_output_shape_default_features() -> None:
 
     assert y.shape == (4, 17, 2)
     assert model.sequence_length == 1
-    assert model.temporal_encoder is None
+    assert model.temporal_fuser is None
 
 
 def test_wiflow_model_sequence_length_one_uses_single_frame_input() -> None:
@@ -58,7 +58,7 @@ def test_wiflow_model_supports_temporal_sequence_input() -> None:
     y = model(x)
 
     assert model.sequence_length == 8
-    assert model.temporal_encoder is not None
+    assert model.temporal_fuser is not None
     assert y.shape == (2, 17, 2)
 
 
@@ -67,5 +67,11 @@ def test_wiflow_model_uses_expected_modules() -> None:
 
     assert isinstance(model.spatial_encoder, WiFlowSpatialEncoder)
     assert isinstance(model.axial_encoder, WiFlowAxialEncoder)
-    assert isinstance(model.pooler, WiFlowAttentionPooler)
-    assert isinstance(model.decoder, WiFlowSkeletonDecoder)
+    assert not hasattr(model, "pooler")
+    assert isinstance(model.decoder, WiFlowJointDecoder)
+
+
+def test_wiflow_model_uses_temporal_fuser_for_sequence_input() -> None:
+    model = WiFlowModel(sequence_length=8)
+
+    assert isinstance(model.temporal_fuser, WiFlowSpatialTemporalFuser)

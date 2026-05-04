@@ -3,11 +3,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .wiflow_attention_pooler import WiFlowAttentionPooler
 from .wiflow_axial_encoder import WiFlowAxialEncoder
-from .wiflow_skeleton_decoder import WiFlowSkeletonDecoder
+from .wiflow_joint_decoder import WiFlowJointDecoder
 from .wiflow_spatial_encoder import WiFlowSpatialEncoder
-from .wiflow_temporal_encoder import WiFlowTemporalEncoder
+from .wiflow_spatial_temporal_fuser import WiFlowSpatialTemporalFuser
 
 
 class WiFlowModel(nn.Module):
@@ -27,13 +26,12 @@ class WiFlowModel(nn.Module):
         self.sequence_length = sequence_length
         self.spatial_encoder = WiFlowSpatialEncoder(input_channels=input_channels)
         self.axial_encoder = WiFlowAxialEncoder(mode=axial_mode)
-        self.pooler = WiFlowAttentionPooler()
-        self.temporal_encoder = (
-            WiFlowTemporalEncoder(sequence_length=sequence_length)
+        self.temporal_fuser = (
+            WiFlowSpatialTemporalFuser(sequence_length=sequence_length)
             if sequence_length > 1
             else None
         )
-        self.decoder = WiFlowSkeletonDecoder()
+        self.decoder = WiFlowJointDecoder()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.sequence_length == 1:
@@ -41,7 +39,6 @@ class WiFlowModel(nn.Module):
                 raise ValueError("single-frame WiFlowModel expects input shaped [B, C, 114, 10]")
             x = self.spatial_encoder(x)
             x = self.axial_encoder(x)
-            x = self.pooler(x)
             return self.decoder(x)
 
         if x.ndim != 5:
@@ -53,9 +50,8 @@ class WiFlowModel(nn.Module):
         x = x.reshape(batch_size * sequence_length, channels, subcarriers, frames)
         x = self.spatial_encoder(x)
         x = self.axial_encoder(x)
-        x = self.pooler(x)
-        x = x.reshape(batch_size, sequence_length, -1)
-        if self.temporal_encoder is None:
-            raise RuntimeError("temporal_encoder is required when sequence_length > 1")
-        x = self.temporal_encoder(x)
+        x = x.reshape(batch_size, sequence_length, x.shape[1], x.shape[2], x.shape[3])
+        if self.temporal_fuser is None:
+            raise RuntimeError("temporal_fuser is required when sequence_length > 1")
+        x = self.temporal_fuser(x)
         return self.decoder(x)
