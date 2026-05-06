@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from dataloader import DEFAULT_SPLIT_SCHEME
+from models import DECODER_TYPES
 from train import (
     DEFAULT_CSI_FEATURES,
     SUPPORTED_CSI_FEATURES,
@@ -124,6 +125,7 @@ def test_train_config_uses_refactor_defaults() -> None:
     assert config.split_scheme == DEFAULT_SPLIT_SCHEME
     assert config.csi_features == DEFAULT_CSI_FEATURES
     assert config.axial_mode == "spatial_then_temporal"
+    assert config.decoder_type == "joint"
     assert config.sequence_length == 1
     assert config.lr == 2e-5
     assert config.max_lr == 5e-4
@@ -153,6 +155,8 @@ def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
             "data/mmfi_pose.h5",
             "--axial-mode",
             "parallel_concat",
+            "--decoder-type",
+            "hierarchical",
             "--sequence-length",
             "8",
         ],
@@ -161,4 +165,6 @@ def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
     args = parse_args()
 
     assert args.axial_mode == "parallel_concat"
+    assert args.decoder_type == "hierarchical"
     assert args.sequence_length == 8
+    assert DECODER_TYPES == ("joint", "hierarchical")

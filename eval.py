@@ -32,6 +32,7 @@ def load_checkpoint_model(
 
     csi_features = tuple(train_config["csi_features"])
     axial_mode = str(train_config.get("axial_mode", "spatial_then_temporal"))
+    decoder_type = str(train_config.get("decoder_type", "joint"))
     sequence_length = int(train_config.get("sequence_length", 1))
     if split_scheme == "frame_random" and sequence_length > 1:
         raise ValueError("Temporal checkpoints require split_scheme='action_env'; frame_random uses single-frame evaluation")
@@ -39,6 +40,7 @@ def load_checkpoint_model(
         input_channels=len(csi_features) * 3,
         axial_mode=axial_mode,
         sequence_length=sequence_length,
+        decoder_type=decoder_type,
     ).to(device)                                                  # load the model
     model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
     model.eval()                                                    # eval mode

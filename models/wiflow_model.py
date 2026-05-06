@@ -4,9 +4,12 @@ import torch
 from torch import nn
 
 from .wiflow_axial_encoder import WiFlowAxialEncoder
+from .wiflow_hierarchical_joint_decoder import WiFlowHierarchicalJointDecoder
 from .wiflow_joint_decoder import WiFlowJointDecoder
 from .wiflow_spatial_encoder import WiFlowSpatialEncoder
 from .wiflow_spatial_temporal_fuser import WiFlowSpatialTemporalFuser
+
+DECODER_TYPES = ("joint", "hierarchical")
 
 
 class WiFlowModel(nn.Module):
@@ -17,13 +20,17 @@ class WiFlowModel(nn.Module):
         input_channels: int = 6,
         axial_mode: str = "spatial_then_temporal",
         sequence_length: int = 1,
+        decoder_type: str = "joint",
     ) -> None:
         super().__init__()
         if sequence_length < 1:
             raise ValueError("sequence_length must be at least 1")
+        if decoder_type not in DECODER_TYPES:
+            raise ValueError(f"decoder_type must be one of {DECODER_TYPES}")
         self.input_channels = input_channels
         self.axial_mode = axial_mode
         self.sequence_length = sequence_length
+        self.decoder_type = decoder_type
         self.spatial_encoder = WiFlowSpatialEncoder(input_channels=input_channels)
         self.axial_encoder = WiFlowAxialEncoder(mode=axial_mode)
         self.temporal_fuser = (
@@ -31,7 +38,11 @@ class WiFlowModel(nn.Module):
             if sequence_length > 1
             else None
         )
-        self.decoder = WiFlowJointDecoder()
+        self.decoder = (
+            WiFlowJointDecoder()
+            if decoder_type == "joint"
+            else WiFlowHierarchicalJointDecoder()
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.sequence_length == 1:

@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
 from torch.utils.data import DataLoader, Subset
 
 from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, create_data_loaders
-from models import AXIAL_ENCODER_MODES, COCO_BONE_EDGES, WiFlowModel
+from models import AXIAL_ENCODER_MODES, COCO_BONE_EDGES, DECODER_TYPES, WiFlowModel
 
 
 DEFAULT_CSI_FEATURES: tuple[str, ...] = ("csi_amplitude", "csi_phase_cos")
@@ -32,6 +32,7 @@ class TrainConfig:
     split_scheme: str = DEFAULT_SPLIT_SCHEME
     csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES
     axial_mode: str = "spatial_then_temporal"
+    decoder_type: str = "joint"
     sequence_length: int = 1
     epochs: int = 50
     batch_size: int = 64
@@ -293,6 +294,7 @@ def run_training(config: TrainConfig) -> None:
         input_channels=input_channels,
         axial_mode=config.axial_mode,
         sequence_length=config.sequence_length,
+        decoder_type=config.decoder_type,
     ).to(device)
     optimizer = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     scheduler = OneCycleLR(
@@ -336,6 +338,7 @@ def run_training(config: TrainConfig) -> None:
             "epoch": epoch,
             "csi_features": feature_names,
             "axial_mode": config.axial_mode,
+            "decoder_type": config.decoder_type,
             "sequence_length": config.sequence_length,
             "train_loss": train_metrics["loss"],
             "train_coord_loss": train_metrics["coord_loss"],
@@ -402,6 +405,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
     parser.add_argument("--csi-features", default=csi_feature_string(DEFAULT_CSI_FEATURES))
     parser.add_argument("--axial-mode", default="spatial_then_temporal", choices=AXIAL_ENCODER_MODES)
+    parser.add_argument("--decoder-type", default="joint", choices=DECODER_TYPES)
     parser.add_argument("--sequence-length", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)

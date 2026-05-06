@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
 - One packed HDF5 can now hold both `action_env` and `frame_random` split schemes; training and evaluation default to `action_env` and can switch with `--split-scheme`.
-- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder, axial attention encoder, spatial-temporal fuser, multi-layer joint cross-attention decoder, legacy temporal encoder, legacy attention pooler, legacy skeleton-aware decoder, and shared COCO17 skeleton topology. The active single-frame model path is CSI feature concat -> spatial encoder with feature-wise antenna mixing, feature-wise stems, and time-frequency residual blocks -> axial encoder -> multi-layer joint cross-attention decoder. For `action_env` sequence runs, per-frame spatial feature maps pass through the spatial-temporal fuser before the multi-layer joint cross-attention decoder.
+- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder, axial attention encoder, spatial-temporal fuser, multi-layer joint cross-attention decoder, hierarchical joint decoder ablation, legacy temporal encoder, legacy attention pooler, legacy skeleton-aware decoder, and shared COCO17 skeleton topology. The active single-frame model path is CSI feature concat -> spatial encoder with feature-wise antenna mixing, feature-wise stems, and time-frequency residual blocks -> axial encoder -> multi-layer joint cross-attention decoder. For `action_env` sequence runs, per-frame spatial feature maps pass through the spatial-temporal fuser before the configured joint decoder.
 - `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
 - `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.
@@ -66,7 +66,13 @@ Run an axial-attention encoder ablation:
 python train.py --dataset-root data\mmfi_pose.h5 --axial-mode temporal_then_spatial --epochs 50 --batch-size 64 --output-dir outputs\train_temporal_then_spatial
 ```
 
-Supported `--axial-mode` values are `spatial_then_temporal`, `temporal_then_spatial`, `parallel_sum`, and `parallel_concat`. Checkpoints store the selected mode in `train_config`, and evaluation rebuilds the model from that saved configuration.
+Run a hierarchical decoder ablation:
+
+```powershell
+python train.py --dataset-root data\mmfi_pose.h5 --decoder-type hierarchical --epochs 50 --batch-size 64 --output-dir outputs\train_hierarchical_decoder
+```
+
+Supported `--axial-mode` values are `spatial_then_temporal`, `temporal_then_spatial`, `parallel_sum`, and `parallel_concat`. Supported `--decoder-type` values are `joint` and `hierarchical`. Checkpoints store the selected mode and decoder type in `train_config`, and evaluation rebuilds the model from that saved configuration.
 
 Run the frame-random split configuration:
 

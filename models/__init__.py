@@ -1,8 +1,9 @@
 from .skeleton import COCO_BONE_EDGES, NUM_COCO_KEYPOINTS, build_normalized_adjacency
 from .wiflow_attention_pooler import WiFlowAttentionPooler
 from .wiflow_axial_encoder import AXIAL_ENCODER_MODES, WiFlowAxialEncoder
+from .wiflow_hierarchical_joint_decoder import WiFlowHierarchicalJointDecoder
 from .wiflow_joint_decoder import WiFlowJointDecoder
-from .wiflow_model import WiFlowModel
+from .wiflow_model import DECODER_TYPES, WiFlowModel
 from .wiflow_skeleton_decoder import WiFlowSkeletonDecoder
 from .wiflow_spatial_encoder import WiFlowSpatialEncoder
 from .wiflow_spatial_temporal_fuser import WiFlowSpatialTemporalFuser
@@ -13,7 +14,9 @@ __all__ = [
     "WiFlowSpatialEncoder",
     "WiFlowAxialEncoder",
     "AXIAL_ENCODER_MODES",
+    "DECODER_TYPES",
     "WiFlowJointDecoder",
+    "WiFlowHierarchicalJointDecoder",
     "WiFlowAttentionPooler",
     "WiFlowSkeletonDecoder",
     "WiFlowSpatialTemporalFuser",
