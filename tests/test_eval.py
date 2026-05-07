@@ -17,7 +17,7 @@ from eval import (
     update_metric_totals,
     write_csv_rows,
 )
-from models import COCO_BONE_EDGES, WiFlowHierarchicalJointDecoder, WiFlowJointDecoder, WiFlowModel
+from models import COCO_BONE_EDGES, WiFlowHierarchicalJointDecoder, WiFlowJointDecoder, WiFlowMSFNDecoder, WiFlowModel
 
 matplotlib.use("Agg")
 
@@ -168,6 +168,28 @@ def test_load_checkpoint_model_uses_decoder_type(tmp_path) -> None:
 
     assert loaded_model.decoder_type == "hierarchical"
     assert isinstance(loaded_model.decoder, WiFlowHierarchicalJointDecoder)
+
+
+def test_load_checkpoint_model_uses_heatmap_decoder_type(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    model = WiFlowModel(input_channels=6, decoder_type="heatmap_msfn", heatmap_size=40)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "train_config": {
+                "csi_features": ("csi_amplitude", "csi_phase_cos"),
+                "decoder_type": "heatmap_msfn",
+                "heatmap_size": 40,
+            },
+        },
+        checkpoint_path,
+    )
+
+    loaded_model, _ = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
+
+    assert loaded_model.decoder_type == "heatmap_msfn"
+    assert loaded_model.heatmap_size == 40
+    assert isinstance(loaded_model.decoder, WiFlowMSFNDecoder)
 
 
 def test_load_checkpoint_model_rejects_temporal_checkpoint_for_frame_random(tmp_path) -> None:

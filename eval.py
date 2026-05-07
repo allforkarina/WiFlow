@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, MMFiPoseDataset, denormalize_keypoints
 from models import COCO_BONE_EDGES, WiFlowModel
-from train import compute_metrics, compute_torso_scale, prepare_model_input, select_device
+from train import compute_metrics, compute_torso_scale, extract_prediction_keypoints, prepare_model_input, select_device
 
 
 def load_checkpoint_model(
@@ -34,6 +34,7 @@ def load_checkpoint_model(
     axial_mode = str(train_config.get("axial_mode", "spatial_then_temporal"))
     decoder_type = str(train_config.get("decoder_type", "joint"))
     sequence_length = int(train_config.get("sequence_length", 1))
+    heatmap_size = int(train_config.get("heatmap_size", 36))
     if split_scheme == "frame_random" and sequence_length > 1:
         raise ValueError("Temporal checkpoints require split_scheme='action_env'; frame_random uses single-frame evaluation")
     model = WiFlowModel(
@@ -41,6 +42,7 @@ def load_checkpoint_model(
         axial_mode=axial_mode,
         sequence_length=sequence_length,
         decoder_type=decoder_type,
+        heatmap_size=heatmap_size,
     ).to(device)                                                  # load the model
     model.load_state_dict(checkpoint["model_state_dict"])           # load the model weights
     model.eval()                                                    # eval mode
@@ -196,7 +198,7 @@ def collect_metric_breakdowns(
     with torch.no_grad():
         for batch in loader:
             model_input, target = prepare_model_input(batch, device, csi_features)
-            prediction = model(model_input)
+            prediction = extract_prediction_keypoints(model(model_input))
             joint_errors = compute_joint_errors(prediction, target).detach().cpu()
             joint_pck = compute_joint_pck(prediction, target).detach().cpu()
             joint_error_batches.append(joint_errors)
@@ -225,7 +227,7 @@ def evaluate_model(
     with torch.no_grad():
         for batch in loader:
             model_input, target = prepare_model_input(batch, device, csi_features)    # get test data
-            prediction = model(model_input)                             # model prediction
+            prediction = extract_prediction_keypoints(model(model_input))              # model prediction
             metrics = compute_metrics(prediction, target)               # compute metrics for the batch
             batch_size = target.shape[0]
             sample_count += batch_size
@@ -266,7 +268,7 @@ def save_visualizations(
         batch["keypoints"] = torch.as_tensor(sample["keypoints"], dtype=torch.float32).unsqueeze(0)
         model_input, _ = prepare_model_input(batch, device, csi_features)
         with torch.no_grad():
-            prediction = model(model_input).detach().cpu().numpy()[0]
+            prediction = extract_prediction_keypoints(model(model_input)).detach().cpu().numpy()[0]
 
         # visualize the CSI heatmap and the predicted vs. ground truth skeletons
         target = np.asarray(sample["keypoints"], dtype=np.float32)

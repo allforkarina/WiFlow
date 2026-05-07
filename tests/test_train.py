@@ -100,8 +100,10 @@ def test_compute_losses_returns_weighted_total() -> None:
     losses = compute_losses(prediction, target, bone_loss_weight=0.5)
 
     expected = losses["coord_loss"] + 0.5 * losses["bone_loss"]
-    assert set(losses) == {"loss", "coord_loss", "bone_loss"}
+    assert set(losses) == {"loss", "coord_loss", "bone_loss", "pcm_loss", "paf_loss"}
     assert torch.isclose(losses["loss"], expected)
+    assert torch.isclose(losses["pcm_loss"], torch.tensor(0.0))
+    assert torch.isclose(losses["paf_loss"], torch.tensor(0.0))
 
 
 def test_compute_metrics_returns_mpjpe_and_pck_values() -> None:
@@ -132,6 +134,34 @@ def test_train_config_uses_refactor_defaults() -> None:
     assert config.weight_decay == 5e-4
     assert config.grad_clip_norm == 1.0
     assert config.bone_loss_weight == 0.5
+    assert config.heatmap_size == 36
+    assert config.heatmap_sigma == 1.5
+    assert config.paf_width == 1.0
+    assert config.paf_loss_weight == 1.0
+
+
+def test_compute_losses_supports_heatmap_msfn_output() -> None:
+    target = torch.full((2, 17, 2), 0.5)
+    prediction = {
+        "keypoints": target.clone(),
+        "stages": [
+            {
+                "pcm": torch.zeros(2, 17, 36, 36),
+                "paf": torch.zeros(2, 32, 36, 36),
+            },
+            {
+                "pcm": torch.zeros(2, 17, 36, 36),
+                "paf": torch.zeros(2, 32, 36, 36),
+            },
+        ],
+    }
+
+    losses = compute_losses(prediction, target)
+
+    assert set(losses) == {"loss", "coord_loss", "bone_loss", "pcm_loss", "paf_loss"}
+    assert losses["pcm_loss"] > 0
+    assert torch.isclose(losses["coord_loss"], torch.tensor(0.0))
+    assert torch.isclose(losses["bone_loss"], torch.tensor(0.0))
 
 
 def test_effective_sequence_length_keeps_action_env_and_downgrades_frame_random() -> None:
@@ -159,6 +189,8 @@ def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
             "hierarchical",
             "--sequence-length",
             "8",
+            "--heatmap-size",
+            "40",
         ],
     )
 
@@ -167,4 +199,5 @@ def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
     assert args.axial_mode == "parallel_concat"
     assert args.decoder_type == "hierarchical"
     assert args.sequence_length == 8
-    assert DECODER_TYPES == ("joint", "hierarchical")
+    assert args.heatmap_size == 40
+    assert DECODER_TYPES == ("joint", "hierarchical", "heatmap_msfn")

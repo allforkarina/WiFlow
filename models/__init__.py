@@ -1,6 +1,7 @@
 from .skeleton import COCO_BONE_EDGES, NUM_COCO_KEYPOINTS, build_normalized_adjacency
 from .wiflow_attention_pooler import WiFlowAttentionPooler
 from .wiflow_axial_encoder import AXIAL_ENCODER_MODES, WiFlowAxialEncoder
+from .wiflow_heatmap_decoder import WiFlowHeatmapDecoder, WiFlowMSFNDecoder, WiFlowPAPM
 from .wiflow_hierarchical_joint_decoder import WiFlowHierarchicalJointDecoder
 from .wiflow_joint_decoder import WiFlowJointDecoder
 from .wiflow_model import DECODER_TYPES, WiFlowModel
@@ -17,6 +18,9 @@ __all__ = [
     "DECODER_TYPES",
     "WiFlowJointDecoder",
     "WiFlowHierarchicalJointDecoder",
+    "WiFlowHeatmapDecoder",
+    "WiFlowMSFNDecoder",
+    "WiFlowPAPM",
     "WiFlowAttentionPooler",
     "WiFlowSkeletonDecoder",
     "WiFlowSpatialTemporalFuser",

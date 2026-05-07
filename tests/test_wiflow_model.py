@@ -5,6 +5,7 @@ import torch
 from models import (
     DECODER_TYPES,
     WiFlowAxialEncoder,
+    WiFlowMSFNDecoder,
     WiFlowHierarchicalJointDecoder,
     WiFlowJointDecoder,
     WiFlowModel,
@@ -102,8 +103,22 @@ def test_wiflow_model_supports_hierarchical_decoder_with_sequence_input() -> Non
     assert y.shape == (2, 17, 2)
 
 
+def test_wiflow_model_supports_heatmap_msfn_decoder() -> None:
+    model = WiFlowModel(decoder_type="heatmap_msfn")
+    x = torch.randn(2, 6, 114, 10)
+
+    y = model(x)
+
+    assert model.decoder_type == "heatmap_msfn"
+    assert isinstance(model.decoder, WiFlowMSFNDecoder)
+    assert y["keypoints"].shape == (2, 17, 2)
+    assert len(y["stages"]) == 3
+    assert y["stages"][-1]["pcm"].shape == (2, 17, 36, 36)
+    assert y["stages"][-1]["paf"].shape == (2, 32, 36, 36)
+
+
 def test_wiflow_model_rejects_unknown_decoder_type() -> None:
-    assert DECODER_TYPES == ("joint", "hierarchical")
+    assert DECODER_TYPES == ("joint", "hierarchical", "heatmap_msfn")
     try:
         WiFlowModel(decoder_type="unknown")
     except ValueError as exc:

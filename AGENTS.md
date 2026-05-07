@@ -3,7 +3,8 @@
 ## Project Structure & Module Organization
 - `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
 - One packed HDF5 can now hold both `action_env` and `frame_random` split schemes; training and evaluation default to `action_env` and can switch with `--split-scheme`.
-- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder, axial attention encoder, spatial-temporal fuser, multi-layer joint cross-attention decoder, hierarchical joint decoder ablation, legacy temporal encoder, legacy attention pooler, legacy skeleton-aware decoder, and shared COCO17 skeleton topology. The active single-frame model path is CSI feature concat -> spatial encoder with feature-wise antenna mixing, feature-wise stems, and time-frequency residual blocks -> axial encoder -> multi-layer joint cross-attention decoder. For `action_env` sequence runs, per-frame spatial feature maps pass through the spatial-temporal fuser before the configured joint decoder.
+- `pose_targets.py`: Torch utilities for online COCO17 PCM/PAF target synthesis from normalized coordinates and argmax PCM decoding back to normalized keypoints.
+- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder, axial attention encoder, spatial-temporal fuser, multi-layer joint cross-attention decoder, hierarchical joint decoder ablation, MultiFormer-style MSFN heatmap decoder with PAPM feedback, legacy temporal encoder, legacy attention pooler, legacy skeleton-aware decoder, and shared COCO17 skeleton topology. The active single-frame model path is CSI feature concat -> spatial encoder with feature-wise antenna mixing, feature-wise stems, and time-frequency residual blocks -> axial encoder -> the configured decoder. For `action_env` sequence runs, per-frame spatial feature maps pass through the spatial-temporal fuser before the configured decoder.
 - `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
 - `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.
@@ -72,7 +73,15 @@ Run a hierarchical decoder ablation:
 python train.py --dataset-root data\mmfi_pose.h5 --decoder-type hierarchical --epochs 50 --batch-size 64 --output-dir outputs\train_hierarchical_decoder
 ```
 
-Supported `--axial-mode` values are `spatial_then_temporal`, `temporal_then_spatial`, `parallel_sum`, and `parallel_concat`. Supported `--decoder-type` values are `joint` and `hierarchical`. Checkpoints store the selected mode and decoder type in `train_config`, and evaluation rebuilds the model from that saved configuration.
+Run a MultiFormer-style MSFN heatmap decoder ablation:
+
+```powershell
+python train.py --dataset-root data\mmfi_pose.h5 --decoder-type heatmap_msfn --epochs 50 --batch-size 64 --output-dir outputs\train_heatmap_msfn
+```
+
+The `heatmap_msfn` decoder keeps COCO17 labels, synthesizes PCM/PAF targets online from normalized coordinates, trains with multi-stage PCM/PAF MSE, and decodes the last-stage PCM by argmax for MPJPE/PCK. It exposes `--heatmap-size`, `--heatmap-sigma`, `--paf-width`, and `--paf-loss-weight`; default MSFN internals use 3 stages, 128 heatmap feature channels, 512 decoder hidden channels, and PAPM feedback from concatenated PCM/PAF.
+
+Supported `--axial-mode` values are `spatial_then_temporal`, `temporal_then_spatial`, `parallel_sum`, and `parallel_concat`. Supported `--decoder-type` values are `joint`, `hierarchical`, and `heatmap_msfn`. Checkpoints store the selected mode, decoder type, and heatmap settings in `train_config`, and evaluation rebuilds the model from that saved configuration.
 
 Run the frame-random split configuration:
 
@@ -104,7 +113,7 @@ python eval.py --dataset-root data\mmfi_pose.h5 --checkpoint outputs\train_frame
 Use Python 3.10+ syntax, type hints, and `pathlib.Path` for paths. Group imports as standard library, third-party, then local. Follow existing naming: `snake_case` functions/variables, `PascalCase` classes, and uppercase constants such as `SPLIT_NAMES`. Use 4-space indentation. Keep comments focused on dataset assumptions, shapes, and normalization.
 
 ## Testing Guidelines
-Automated tests use `pytest`. Add tests for split generation, path validation, shape validation, normalization edge cases, model shape contracts, and HDF5 round-tripping. Name files `test_*.py` and tests `test_<behavior>()`. Use temporary directories and tiny synthetic fixtures.
+Automated tests use `pytest`. Add tests for split generation, path validation, shape validation, normalization edge cases, model shape contracts, PCM/PAF target synthesis, heatmap decoder stage outputs, and HDF5 round-tripping. Name files `test_*.py` and tests `test_<behavior>()`. Use temporary directories and tiny synthetic fixtures.
 
 Training and evaluation outputs are written under `outputs/` by default. Checkpoints include `best_val_mpjpe.pth`, `best_val_pck_0_2.pth`, and `last.pth`; epoch metrics are appended to `train_log.csv`. Evaluation visualizations are saved as `.png` files grouped by action/environment samples.
 
