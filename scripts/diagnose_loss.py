@@ -77,7 +77,7 @@ def diagnose_data_and_loss(h5_path: str):
     # Instantiate Model
     # 2 features * 3 antennas = 6 channels
     model = WiFlowModel(
-        csi_channels=len(csi_features) * 3,
+        input_channels=len(csi_features) * 3,
         decoder_type="heatmap_msfn",
         heatmap_size=heatmap_size
     )
