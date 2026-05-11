@@ -497,8 +497,8 @@ def _normalize_keypoints(
     """Apply one train-split global axis-wise scaling to keypoint coordinates."""
 
     normalized = keypoints.copy()
-    normalized[:, 0] = normalized[:, 0] / x_scale
-    normalized[:, 1] = normalized[:, 1] / y_scale
+    normalized[..., 0] = normalized[..., 0] / x_scale
+    normalized[..., 1] = normalized[..., 1] / y_scale
     return normalized.astype(np.float32)
 
 
@@ -761,49 +761,59 @@ class MMFiPoseDataset:
     def __del__(self) -> None:  # pragma: no cover - best-effort cleanup.
         self.close()
 
-    def __getitem__(self, index: int) -> Dict[str, np.ndarray | str]:
-        """Load one frame's normalized keypoints and CSI amplitude arrays from HDF5."""
+    def __getitems__(self, indices: list[int]) -> list[dict[str, np.ndarray | str]]:
+        """Bulk-load samples with a single HDF5 read pass per dataset."""
+        if not indices:
+            return []
 
         h5_file = self._get_h5_file()
-        frame_index = int(self.indices[index])
-        keypoints = np.asarray(h5_file["keypoints"][frame_index], dtype=np.float32)
+        frame_indices = np.asarray([int(self.indices[i]) for i in indices], dtype=np.int64)
+
+        keypoints_batch = np.asarray(h5_file["keypoints"][frame_indices], dtype=np.float32)
         if self.sequence_frame_indices is None:
-            csi_amplitude = np.asarray(h5_file["csi_amplitude"][frame_index], dtype=np.float32)
-            csi_phase = np.asarray(h5_file["csi_phase"][frame_index], dtype=np.float32)
-            csi_phase_cos = np.asarray(h5_file["csi_phase_cos"][frame_index], dtype=np.float32)
+            amp_batch = np.asarray(h5_file["csi_amplitude"][frame_indices], dtype=np.float32)
+            phase_batch = np.asarray(h5_file["csi_phase"][frame_indices], dtype=np.float32)
+            phase_cos_batch = np.asarray(h5_file["csi_phase_cos"][frame_indices], dtype=np.float32)
         else:
-            csi_frame_indices = self.sequence_frame_indices[index]
-            csi_amplitude = np.stack(
-                [np.asarray(h5_file["csi_amplitude"][csi_index], dtype=np.float32) for csi_index in csi_frame_indices]
-            )
-            csi_phase = np.stack(
-                [np.asarray(h5_file["csi_phase"][csi_index], dtype=np.float32) for csi_index in csi_frame_indices]
-            )
-            csi_phase_cos = np.stack(
-                [np.asarray(h5_file["csi_phase_cos"][csi_index], dtype=np.float32) for csi_index in csi_frame_indices]
-            )
+            seq_indices = self.sequence_frame_indices[indices]
+            unique_frames, inverse = np.unique(seq_indices.flatten(), return_inverse=True)
+            amp_flat = np.asarray(h5_file["csi_amplitude"][unique_frames], dtype=np.float32)
+            phase_flat = np.asarray(h5_file["csi_phase"][unique_frames], dtype=np.float32)
+            phase_cos_flat = np.asarray(h5_file["csi_phase_cos"][unique_frames], dtype=np.float32)
+            amp_batch = amp_flat[inverse].reshape(len(indices), self.sequence_length, *CSI_SHAPE)
+            phase_batch = phase_flat[inverse].reshape(len(indices), self.sequence_length, *CSI_SHAPE)
+            phase_cos_batch = phase_cos_flat[inverse].reshape(len(indices), self.sequence_length, *CSI_SHAPE)
+
         if self.storage_format == RAW_STORAGE_ATTR:
-            keypoints = _normalize_keypoints(
-                keypoints,
-                x_scale=self.keypoint_x_scale,
-                y_scale=self.keypoint_y_scale,
+            keypoints_batch = _normalize_keypoints(
+                keypoints_batch, x_scale=self.keypoint_x_scale, y_scale=self.keypoint_y_scale,
             )
-            csi_amplitude = _normalize_csi_amplitude(
-                csi_amplitude,
-                train_min=self.amplitude_train_min,
-                train_max=self.amplitude_train_max,
+            amp_batch = _normalize_csi_amplitude(
+                amp_batch, train_min=self.amplitude_train_min, train_max=self.amplitude_train_max,
             )
 
-        return {
-            "action": _decode_string(h5_file["action"][frame_index]),
-            "sample": _decode_string(h5_file["sample"][frame_index]),
-            "environment": _decode_string(h5_file["environment"][frame_index]),
-            "frame_id": _decode_string(h5_file["frame_id"][frame_index]),
-            "keypoints": keypoints,
-            "csi_amplitude": csi_amplitude,
-            "csi_phase": csi_phase,
-            "csi_phase_cos": csi_phase_cos,
-        }
+        actions = h5_file["action"][frame_indices]
+        samples = h5_file["sample"][frame_indices]
+        environments = h5_file["environment"][frame_indices]
+        frame_ids = h5_file["frame_id"][frame_indices]
+
+        return [
+            {
+                "action": _decode_string(actions[i]),
+                "sample": _decode_string(samples[i]),
+                "environment": _decode_string(environments[i]),
+                "frame_id": _decode_string(frame_ids[i]),
+                "keypoints": keypoints_batch[i],
+                "csi_amplitude": amp_batch[i],
+                "csi_phase": phase_batch[i],
+                "csi_phase_cos": phase_cos_batch[i],
+            }
+            for i in range(len(indices))
+        ]
+
+    def __getitem__(self, index: int) -> Dict[str, np.ndarray | str]:
+        """Load one frame via bulk path for consistent behaviour."""
+        return self.__getitems__([index])[0]
 
 
 # Put MMFiPoseDataset into DataLoader, batch and shuffle.
@@ -840,6 +850,8 @@ def create_data_loader(
         batch_size=batch_size,
         shuffle=should_shuffle,
         num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
     )
 
 

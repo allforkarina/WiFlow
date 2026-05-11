@@ -46,7 +46,7 @@ class TrainConfig:
     heatmap_sigma: float = 1.5
     paf_width: float = 1.0
     paf_loss_weight: float = 1.0
-    num_workers: int = 0
+    num_workers: int = 4
     device: str = "cuda"
     seed: int = 42
     subset_size: int | None = None
@@ -485,7 +485,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heatmap-sigma", type=float, default=1.5)
     parser.add_argument("--paf-width", type=float, default=1.0)
     parser.add_argument("--paf-loss-weight", type=float, default=1.0)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--subset-size", type=int, default=None)
