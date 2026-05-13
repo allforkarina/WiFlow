@@ -28,7 +28,8 @@ outputs/
 *.pth
 *.ckpt
 
-# IDE and OS files
+# Test files (local only)
+tests/
 .idea/
 .vscode/
 .DS_Store
