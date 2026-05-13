@@ -3,32 +3,35 @@ from __future__ import annotations
 import torch
 
 
-NUM_COCO_KEYPOINTS = 17
-COCO_BONE_EDGES: tuple[tuple[int, int], ...] = (
+NUM_OPENPOSE_KEYPOINTS = 18
+OPENPOSE_BONE_EDGES: tuple[tuple[int, int], ...] = (
     (0, 1),
-    (0, 2),
-    (1, 3),
-    (2, 4),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (1, 5),
     (5, 6),
-    (5, 7),
-    (7, 9),
-    (6, 8),
-    (8, 10),
-    (5, 11),
-    (6, 12),
+    (6, 7),
+    (1, 8),
+    (8, 9),
+    (9, 10),
+    (1, 11),
     (11, 12),
-    (11, 13),
-    (13, 15),
-    (12, 14),
+    (12, 13),
+    (0, 14),
     (14, 16),
+    (0, 15),
+    (15, 17),
+    (2, 8),
+    (5, 11),
 )
 
 
 def build_normalized_adjacency(
-    num_nodes: int = NUM_COCO_KEYPOINTS,
-    edges: tuple[tuple[int, int], ...] = COCO_BONE_EDGES,
+    num_nodes: int = NUM_OPENPOSE_KEYPOINTS,
+    edges: tuple[tuple[int, int], ...] = OPENPOSE_BONE_EDGES,
 ) -> torch.Tensor:
-    """Build symmetric normalized adjacency with self-loops for COCO keypoints."""
+    """Build symmetric normalized adjacency with self-loops for OpenPose keypoints."""
 
     adjacency = torch.eye(num_nodes, dtype=torch.float32)
     for start, end in edges:

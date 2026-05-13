@@ -3,15 +3,15 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .skeleton import NUM_COCO_KEYPOINTS, build_normalized_adjacency
+from .skeleton import NUM_OPENPOSE_KEYPOINTS, build_normalized_adjacency
 
 
 class WiFlowSkeletonDecoder(nn.Module):
-    """Skeleton-aware decoder from [B, 256] pose embeddings to [B, 17, 2]."""
+    """Skeleton-aware decoder from [B, 256] pose embeddings to [B, 18, 2]."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.num_queries = NUM_COCO_KEYPOINTS
+        self.num_queries = NUM_OPENPOSE_KEYPOINTS
         self.embedding_dim = 256
         self.num_heads = 4
         self.joint_queries = nn.Parameter(torch.zeros(self.num_queries, self.embedding_dim))

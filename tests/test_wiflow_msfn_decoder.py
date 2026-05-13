@@ -13,8 +13,8 @@ def test_wiflow_msfn_decoder_outputs_multistage_heatmaps() -> None:
 
     assert len(stages) == 3
     for stage in stages:
-        assert stage["pcm"].shape == (2, 17, 36, 36)
-        assert stage["paf"].shape == (2, 32, 36, 36)
+        assert stage["pcm"].shape == (2, 18, 36, 36)
+        assert stage["paf"].shape == (2, 38, 36, 36)
 
 
 def test_wiflow_msfn_decoder_configuration() -> None:

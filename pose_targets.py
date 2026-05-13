@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import torch
 
-from models.skeleton import COCO_BONE_EDGES, NUM_COCO_KEYPOINTS
+from models.skeleton import NUM_OPENPOSE_KEYPOINTS, OPENPOSE_BONE_EDGES
 
 
 def keypoints_to_heatmap_coords(keypoints: torch.Tensor, heatmap_size: int) -> torch.Tensor:
-    """Map normalized COCO keypoints in [0, 1] to heatmap coordinates."""
+    """Map normalized OpenPose keypoints in [0, 1] to heatmap coordinates."""
 
-    if keypoints.ndim != 3 or keypoints.shape[-2:] != (NUM_COCO_KEYPOINTS, 2):
-        raise ValueError(f"Expected keypoints shaped [B, 17, 2], got {tuple(keypoints.shape)}")
+    if keypoints.ndim != 3 or keypoints.shape[-2:] != (NUM_OPENPOSE_KEYPOINTS, 2):
+        raise ValueError(f"Expected keypoints shaped [B, 18, 2], got {tuple(keypoints.shape)}")
     if heatmap_size < 2:
         raise ValueError("heatmap_size must be at least 2")
     return keypoints.clamp(0.0, 1.0) * float(heatmap_size - 1)
@@ -20,7 +20,7 @@ def build_pcm_targets(
     heatmap_size: int = 36,
     sigma: float = 1.5,
 ) -> torch.Tensor:
-    """Build per-joint Gaussian PCM targets from normalized COCO17 keypoints."""
+    """Build per-joint Gaussian PCM targets from normalized OpenPose18 keypoints."""
 
     if sigma <= 0:
         raise ValueError("sigma must be positive")
@@ -40,9 +40,9 @@ def build_paf_targets(
     keypoints: torch.Tensor,
     heatmap_size: int = 36,
     width: float = 1.0,
-    edges: tuple[tuple[int, int], ...] = COCO_BONE_EDGES,
+    edges: tuple[tuple[int, int], ...] = OPENPOSE_BONE_EDGES,
 ) -> torch.Tensor:
-    """Build COCO bone PAF targets with one x/y vector channel pair per edge."""
+    """Build OpenPose bone PAF targets with one x/y vector channel pair per edge."""
 
     if width <= 0:
         raise ValueError("width must be positive")
@@ -95,10 +95,10 @@ def build_pcm_paf_targets(
 
 
 def decode_pcm_argmax(pcm: torch.Tensor) -> torch.Tensor:
-    """Decode PCM heatmaps to normalized COCO17 coordinates with per-channel argmax."""
+    """Decode PCM heatmaps to normalized OpenPose18 coordinates with per-channel argmax."""
 
-    if pcm.ndim != 4 or pcm.shape[1] != NUM_COCO_KEYPOINTS:
-        raise ValueError(f"Expected PCM shaped [B, 17, H, W], got {tuple(pcm.shape)}")
+    if pcm.ndim != 4 or pcm.shape[1] != NUM_OPENPOSE_KEYPOINTS:
+        raise ValueError(f"Expected PCM shaped [B, 18, H, W], got {tuple(pcm.shape)}")
     _, _, height, width = pcm.shape
     flat_indices = pcm.flatten(2).argmax(dim=-1)
     x = (flat_indices % width).to(dtype=pcm.dtype) / float(max(width - 1, 1))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .skeleton import NUM_COCO_KEYPOINTS, build_normalized_adjacency
+from .skeleton import NUM_OPENPOSE_KEYPOINTS, build_normalized_adjacency
 
 
 class WiFlowJointCrossAttentionLayer(nn.Module):
@@ -40,13 +40,13 @@ class WiFlowJointCrossAttentionLayer(nn.Module):
 
 
 class WiFlowJointDecoder(nn.Module):
-    """Decode COCO17 coordinates from [B, 256, 29, 10] feature maps."""
+    """Decode OpenPose18 coordinates from [B, 256, 29, 16] feature maps."""
 
     def __init__(self, num_layers: int = 3) -> None:
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be at least 1")
-        self.num_queries = NUM_COCO_KEYPOINTS
+        self.num_queries = NUM_OPENPOSE_KEYPOINTS
         self.embedding_dim = 256
         self.num_layers = num_layers
         self.num_heads = 4
@@ -74,7 +74,7 @@ class WiFlowJointDecoder(nn.Module):
 
     def flatten_tokens(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 4:
-            raise ValueError("WiFlowJointDecoder expects input shaped [B, 256, 29, 10]")
+            raise ValueError("WiFlowJointDecoder expects input shaped [B, 256, 29, 16]")
         return x.flatten(2).transpose(1, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

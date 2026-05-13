@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
@@ -14,15 +14,13 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
 from torch.utils.data import DataLoader, Subset
 
-from dataloader import DEFAULT_SPLIT_SCHEME, SPLIT_SCHEMES, create_data_loaders
-from models import AXIAL_ENCODER_MODES, COCO_BONE_EDGES, DECODER_TYPES, WiFlowModel
+from dataloader import create_memmap_data_loaders
+from models import AXIAL_ENCODER_MODES, DECODER_TYPES, OPENPOSE_BONE_EDGES, WiFlowModel
 from pose_targets import build_pcm_paf_targets
 
 
-DEFAULT_CSI_FEATURES: tuple[str, ...] = ("csi_amplitude", "csi_phase_cos")
-SUPPORTED_CSI_FEATURES: tuple[str, ...] = ("csi_amplitude", "csi_phase_cos")
 PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)
-RIGHT_SHOULDER_INDEX = 6
+RIGHT_SHOULDER_INDEX = 2
 LEFT_HIP_INDEX = 11
 
 
@@ -30,11 +28,8 @@ LEFT_HIP_INDEX = 11
 class TrainConfig:
     dataset_root: str
     output_dir: str = "outputs/train"
-    split_scheme: str = DEFAULT_SPLIT_SCHEME
-    csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES
     axial_mode: str = "spatial_then_temporal"
     decoder_type: str = "joint"
-    sequence_length: int = 1
     epochs: int = 50
     batch_size: int = 64
     lr: float = 2e-5
@@ -52,61 +47,20 @@ class TrainConfig:
     subset_size: int | None = None
 
 
-def parse_csi_features(value: str | Iterable[str]) -> tuple[str, ...]:
-    """Parse and validate the configured CSI feature names outside the batch hot path."""
-
-    if isinstance(value, str):
-        features = tuple(feature.strip() for feature in value.split(",") if feature.strip())
-    else:
-        features = tuple(value)
-    if not features:
-        raise ValueError("At least one CSI feature must be selected")
-    if len(set(features)) != len(features):
-        raise ValueError(f"CSI features must not contain duplicates: {features}")
-    unsupported = [feature for feature in features if feature not in SUPPORTED_CSI_FEATURES]
-    if unsupported:
-        raise ValueError(f"Unsupported CSI features {unsupported}; supported features are {SUPPORTED_CSI_FEATURES}")
-    return features
-
-
-def csi_feature_string(features: Iterable[str]) -> str:
-    return ",".join(features)
-
-
 def prepare_model_input(
     batch: Mapping[str, torch.Tensor],
     device: torch.device,
-    csi_features: tuple[str, ...] = DEFAULT_CSI_FEATURES,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert one dataloader batch to model input and labels."""
-
-    feature_tensors = [
-        torch.as_tensor(batch[feature_name], dtype=torch.float32, device=device)
-        for feature_name in csi_features
-    ]
-    feature_ndim = feature_tensors[0].ndim
-    if feature_ndim not in (4, 5):
-        raise ValueError(f"Expected CSI feature tensors with 4 or 5 dimensions, got {feature_ndim}")
-    model_input = torch.cat(feature_tensors, dim=2 if feature_ndim == 5 else 1)
+    model_input = torch.as_tensor(batch["csi_amplitude"], dtype=torch.float32, device=device)
     keypoints = torch.as_tensor(batch["keypoints"], dtype=torch.float32, device=device)
     return model_input, keypoints
-
-
-def effective_sequence_length(split_scheme: str, sequence_length: int) -> int:
-    if sequence_length < 1:
-        raise ValueError("sequence_length must be at least 1")
-    if split_scheme == "frame_random":
-        return 1
-    return sequence_length
 
 
 def bone_length_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    edges: tuple[tuple[int, int], ...] = COCO_BONE_EDGES,
+    edges: tuple[tuple[int, int], ...] = OPENPOSE_BONE_EDGES,
 ) -> torch.Tensor:
-    """Compute L1 loss between predicted and target bone lengths."""
-
     edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
     pred_lengths = torch.linalg.vector_norm(
         prediction[:, edge_index[:, 0]] - prediction[:, edge_index[:, 1]],
@@ -139,8 +93,6 @@ def compute_losses(
     paf_width: float = 1.0,
     paf_loss_weight: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
-    """Return training losses for coordinate or heatmap decoder outputs."""
-
     zero = torch.zeros((), dtype=target.dtype, device=target.device)
     if isinstance(prediction, Mapping):
         stages = prediction.get("stages")
@@ -179,8 +131,6 @@ def compute_losses(
 
 
 def compute_torso_scale(target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    """Return torso scales derived from the right-shoulder to left-hip distance."""
-
     return torch.linalg.vector_norm(
         target[:, RIGHT_SHOULDER_INDEX] - target[:, LEFT_HIP_INDEX],
         dim=-1,
@@ -188,8 +138,6 @@ def compute_torso_scale(target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor
 
 
 def mpjpe(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Mean per-joint Euclidean distance."""
-
     return torch.linalg.vector_norm(prediction - target, dim=-1).mean()
 
 
@@ -199,8 +147,6 @@ def pck(
     threshold: float,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Percentage of correct keypoints normalized by right-shoulder to left-hip distance."""
-
     errors = torch.linalg.vector_norm(prediction - target, dim=-1)
     scale = compute_torso_scale(target, eps=eps)
     return (errors < (scale[:, None] * threshold)).float().mean()
@@ -231,7 +177,7 @@ def run_epoch(
     sample_count = 0
 
     for batch in loader:
-        model_input, target = prepare_model_input(batch, device, criterion_config.csi_features)
+        model_input, target = prepare_model_input(batch, device)
 
         with torch.set_grad_enabled(is_training):
             prediction = model(model_input)
@@ -318,34 +264,22 @@ def select_device(device_name: str) -> torch.device:
 
 
 def run_training(config: TrainConfig) -> None:
-    effective_length = effective_sequence_length(config.split_scheme, config.sequence_length)
-    if effective_length != config.sequence_length:
-        print(
-            "frame_random split uses single-frame behavior; "
-            f"overriding sequence_length={config.sequence_length} to 1"
-        )
-        config = replace(config, sequence_length=effective_length)
-
     torch.manual_seed(config.seed)
     device = select_device(config.device)
     output_dir = Path(config.output_dir)
-    input_channels = len(config.csi_features) * 3
 
-    loaders = create_data_loaders(
-        dataset_root=config.dataset_root,
+    loaders = create_memmap_data_loaders(
+        data_dir=config.dataset_root,
         batch_size=config.batch_size,
-        seed=config.seed,
         num_workers=config.num_workers,
-        split_scheme=config.split_scheme,
-        sequence_length=config.sequence_length,
+        seed=config.seed,
     )
 
     train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
     val_loader = maybe_subset_loader(loaders["val"], config.subset_size)
     model = WiFlowModel(
-        input_channels=input_channels,
+        input_channels=3,
         axial_mode=config.axial_mode,
-        sequence_length=config.sequence_length,
         decoder_type=config.decoder_type,
         heatmap_size=config.heatmap_size,
     ).to(device)
@@ -362,7 +296,7 @@ def run_training(config: TrainConfig) -> None:
     )
 
     first_batch = next(iter(train_loader))
-    model_input, target = prepare_model_input(first_batch, device, config.csi_features)
+    model_input, target = prepare_model_input(first_batch, device)
     with torch.no_grad():
         output = model(model_input)
     keypoint_output = extract_prediction_keypoints(output)
@@ -377,7 +311,6 @@ def run_training(config: TrainConfig) -> None:
 
     best_val_mpjpe = float("inf")
     best_val_pck_0_2 = -float("inf")
-    feature_names = csi_feature_string(config.csi_features)
     log_path = output_dir / "train_log.csv"
     for epoch in range(1, config.epochs + 1):
         start_time = time.perf_counter()
@@ -395,10 +328,8 @@ def run_training(config: TrainConfig) -> None:
 
         row: Dict[str, float | int | str] = {
             "epoch": epoch,
-            "csi_features": feature_names,
             "axial_mode": config.axial_mode,
             "decoder_type": config.decoder_type,
-            "sequence_length": config.sequence_length,
             "train_loss": train_metrics["loss"],
             "train_coord_loss": train_metrics["coord_loss"],
             "train_bone_loss": train_metrics["bone_loss"],
@@ -467,13 +398,10 @@ def run_training(config: TrainConfig) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the WiFlow pose model.")
-    parser.add_argument("--dataset-root", required=True, help="Path to the MM-Fi HDF5 dataset or its parent directory.")
+    parser.add_argument("--dataset-root", required=True, help="Path to the NPY memmap dataset directory.")
     parser.add_argument("--output-dir", default="outputs/train", help="Directory for logs and checkpoints.")
-    parser.add_argument("--split-scheme", default=DEFAULT_SPLIT_SCHEME, choices=SPLIT_SCHEMES)
-    parser.add_argument("--csi-features", default=csi_feature_string(DEFAULT_CSI_FEATURES))
     parser.add_argument("--axial-mode", default="spatial_then_temporal", choices=AXIAL_ENCODER_MODES)
     parser.add_argument("--decoder-type", default="joint", choices=DECODER_TYPES)
-    parser.add_argument("--sequence-length", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -489,9 +417,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--subset-size", type=int, default=None)
-    args = parser.parse_args()
-    args.csi_features = parse_csi_features(args.csi_features)
-    return args
+    return parser.parse_args()
 
 
 def main() -> None:

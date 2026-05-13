@@ -1,22 +1,23 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `dataloader.py`: Core module for discovering samples, packing HDF5 files, loading splits, creating PyTorch `DataLoader` instances, and previewing split contents.
-- One packed HDF5 can now hold both `action_env` and `frame_random` split schemes; training and evaluation default to `action_env` and can switch with `--split-scheme`.
-- `pose_targets.py`: Torch utilities for online COCO17 PCM/PAF target synthesis from normalized coordinates and argmax PCM decoding back to normalized keypoints.
-- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder, axial attention encoder, spatial-temporal fuser, multi-layer joint cross-attention decoder, hierarchical joint decoder ablation, MultiFormer-style MSFN heatmap decoder with PAPM feedback, legacy temporal encoder, legacy attention pooler, legacy skeleton-aware decoder, and shared COCO17 skeleton topology. The active single-frame model path is CSI feature concat -> spatial encoder with feature-wise antenna mixing, feature-wise stems, and time-frequency residual blocks -> axial encoder -> the configured decoder. For `action_env` sequence runs, per-frame spatial feature maps pass through the spatial-temporal fuser before the configured decoder.
+- `dataloader.py`: Core module for loading NPY memmap datasets, creating PyTorch `DataLoader` instances with `memmap_collate_fn`, and providing `create_memmap_data_loader` / `create_memmap_data_loaders` factory functions.
+- `data/memmap_dataset.py`: NPY memmap dataset reader that loads CSI amplitude, OpenPose18 keypoints, and metadata from `.npy`/`.npz` files with zero-copy OS-cached I/O.
+- `data/heatmap_gt.py`: Functions for generating OpenPose18 PCM/PAF targets from normalized keypoint coordinates.
+- `pose_targets.py`: Torch utilities for online OpenPose18 PCM/PAF target synthesis from normalized coordinates and argmax PCM decoding back to normalized keypoints.
+- `models/`: PyTorch model code, including the full WiFlow model, CSI spatial encoder with symmetric spatio-temporal downsampling, axial attention encoder, spatial-temporal fuser (legacy), multi-layer joint cross-attention decoder, hierarchical joint decoder ablation, MultiFormer-style MSFN heatmap decoder with PAPM feedback, legacy temporal encoder, legacy attention pooler, legacy skeleton-aware decoder, and shared OpenPose18 skeleton topology. The active single-frame model path is CSI amplitude input -> spatial encoder with antenna mixing, feature stem, and symmetric time-frequency residual blocks -> axial encoder -> the configured decoder.
 - `train.py`: Root-level training entrypoint for WiFlow pose regression, including losses, metrics, optimizer, scheduler, checkpointing, and CSV logging.
 - `eval.py`: Root-level evaluation entrypoint for loading checkpoints, computing test metrics, and saving CSI/skeleton visualizations.
-- `scripts/build_h5_dataset.py`: Command-line wrapper that builds a single `.h5`/`.hdf5` dataset from the raw MM-Fi directory structure.
+- `scripts/build_memmap.py`: Command-line wrapper that builds an NPY memmap dataset from the raw MM-Fi directory structure.
 - `tests/`: `pytest` unit tests. Mirror module names such as `tests/test_dataloader.py`, `tests/test_wiflow_model.py`, or `tests/test_wiflow_decoder.py`.
 - `.gitignore`: Excludes Python caches, local environments, generated datasets, checkpoints, and editor files from Git.
 
 Generated datasets can be large and should not be committed. Keep raw dataset roots outside the repository.
 
 ## Project Domain Knowledge
-- One CSI sample is a physical signal tensor shaped `3 antennas x 114 subcarriers x 10 frames`. The subcarrier axis carries spatial-frequency response, the antenna axis carries spatial phase-difference and direction information, and the temporal axis carries motion cues such as Doppler effects.
-- CSI amplitude and phase are complementary physical quantities with different noise patterns. When both are used, do not assume they should be processed identically or fused by blind concatenation.
-- The target pose is the structured COCO17 keypoint set. The 17 joints are not independent coordinates; they are constrained by the human skeleton topology.
+- One CSI sample is a physical signal tensor shaped `64 time steps x 3 antennas x 114 subcarriers` in the NPY memmap dataset. The model input is `[B, 3, 114, 64]` (channels-first). The subcarrier axis carries spatial-frequency response, the antenna axis carries spatial phase-difference and direction information, and the temporal axis (64 steps, upsampled from 10 original time shots) carries motion cues such as Doppler effects.
+- Only CSI amplitude is used as input (3 channels, one per antenna). Phase information is not used.
+- The target pose is the structured OpenPose18 keypoint set (18 joints including neck). The 18 joints are not independent coordinates; they are constrained by the human skeleton topology (19 bone edges).
 - The central modeling gap is that CSI is a low-resolution, high-noise, implicit sensing signal, while pose regression needs precise coordinates. Strong skeleton priors are important for bridging that gap.
 - Preserve CSI physical dimension semantics where practical. Avoid arbitrary flattening or pooling that mixes antenna, subcarrier, and temporal meanings before the model has selected useful information.
 - Prefer attention-based information selection over destructive pooling for low-SNR CSI features, and use structured supervision such as bone or topology-aware losses in addition to coordinate losses.
@@ -29,16 +30,10 @@ conda activate WiFiPose
 pip install numpy scipy h5py tqdm torch pytest
 ```
 
-Build an HDF5 dataset:
+Build an NPY memmap dataset:
 
 ```powershell
-python scripts\build_h5_dataset.py --dataset-root D:\path\to\raw\dataset --output-path data\mmfi_pose.h5 --seed 42
-```
-
-Inspect an HDF5 dataset:
-
-```powershell
-python dataloader.py --dataset-root data\mmfi_pose.h5 --preview
+python scripts\build_memmap.py --dataset-root D:\path\to\raw\dataset --output-dir data\mmfi_pose --seed 42
 ```
 
 Run tests:
@@ -50,75 +45,55 @@ pytest
 Run a quick training sanity check:
 
 ```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --epochs 5 --subset-size 32 --output-dir outputs\sanity
+python train.py --dataset-root data\mmfi_pose --epochs 5 --subset-size 32 --output-dir outputs\sanity
 ```
 
 Run the default training configuration:
 
 ```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --epochs 50 --batch-size 64 --output-dir outputs\train
+python train.py --dataset-root data\mmfi_pose --epochs 50 --batch-size 64 --output-dir outputs\train
 ```
 
-The default training configuration uses `csi_amplitude,csi_phase_cos` input features, `OneCycleLR`, gradient clipping, `coord_l1 + 0.5 * bone_l1`, the baseline axial mode `spatial_then_temporal`, and stronger AdamW weight decay than the original baseline. Use `--csi-features csi_amplitude` for an amplitude-only run.
+The default training configuration uses CSI amplitude input (3 channels), `OneCycleLR`, gradient clipping, `coord_l1 + 0.5 * bone_l1`, the baseline axial mode `spatial_then_temporal`, and AdamW weight decay.
 
 Run an axial-attention encoder ablation:
 
 ```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --axial-mode temporal_then_spatial --epochs 50 --batch-size 64 --output-dir outputs\train_temporal_then_spatial
+python train.py --dataset-root data\mmfi_pose --axial-mode temporal_then_spatial --epochs 50 --batch-size 64 --output-dir outputs\train_temporal_then_spatial
 ```
 
 Run a hierarchical decoder ablation:
 
 ```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --decoder-type hierarchical --epochs 50 --batch-size 64 --output-dir outputs\train_hierarchical_decoder
+python train.py --dataset-root data\mmfi_pose --decoder-type hierarchical --epochs 50 --batch-size 64 --output-dir outputs\train_hierarchical_decoder
 ```
 
 Run a MultiFormer-style MSFN heatmap decoder ablation:
 
 ```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --decoder-type heatmap_msfn --epochs 50 --batch-size 64 --output-dir outputs\train_heatmap_msfn
+python train.py --dataset-root data\mmfi_pose --decoder-type heatmap_msfn --epochs 50 --batch-size 64 --output-dir outputs\train_heatmap_msfn
 ```
 
-The `heatmap_msfn` decoder keeps COCO17 labels, synthesizes PCM/PAF targets online from normalized coordinates, trains with multi-stage PCM/PAF MSE, and decodes the last-stage PCM by argmax for MPJPE/PCK. It exposes `--heatmap-size`, `--heatmap-sigma`, `--paf-width`, and `--paf-loss-weight`; default MSFN internals use 3 stages, 128 heatmap feature channels, 512 decoder hidden channels, and PAPM feedback from concatenated PCM/PAF.
+The `heatmap_msfn` decoder uses OpenPose18 labels, synthesizes PCM/PAF targets online from normalized coordinates, trains with multi-stage PCM/PAF MSE, and decodes the last-stage PCM by argmax for MPJPE/PCK. It exposes `--heatmap-size`, `--heatmap-sigma`, `--paf-width`, and `--paf-loss-weight`; default MSFN internals use 3 stages, 128 heatmap feature channels, 512 decoder hidden channels, and PAPM feedback from concatenated PCM/PAF.
 
 Supported `--axial-mode` values are `spatial_then_temporal`, `temporal_then_spatial`, `parallel_sum`, and `parallel_concat`. Supported `--decoder-type` values are `joint`, `hierarchical`, and `heatmap_msfn`. Checkpoints store the selected mode, decoder type, and heatmap settings in `train_config`, and evaluation rebuilds the model from that saved configuration.
-
-Run the frame-random split configuration:
-
-```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --split-scheme frame_random --epochs 50 --batch-size 64 --output-dir outputs\train_frame_random
-```
-
-Run a temporal sequence configuration for action/environment splits:
-
-```powershell
-python train.py --dataset-root data\mmfi_pose.h5 --sequence-length 8 --epochs 50 --batch-size 64 --output-dir outputs\train_seq8
-```
-
-`--sequence-length` is effective for `action_env` runs. `frame_random` keeps the old single-frame behavior regardless of the requested sequence length, and temporal checkpoints should be evaluated with `action_env`.
 
 Evaluate one checkpoint:
 
 ```powershell
-python eval.py --dataset-root data\mmfi_pose.h5 --checkpoint outputs\train\best_val_mpjpe.pth --output-dir outputs\eval
-```
-
-Evaluate against the frame-random split:
-
-```powershell
-python eval.py --dataset-root data\mmfi_pose.h5 --checkpoint outputs\train_frame_random\best_val_mpjpe.pth --split-scheme frame_random --output-dir outputs\eval_frame_random
+python eval.py --dataset-root data\mmfi_pose --checkpoint outputs\train\best_val_mpjpe.pth --output-dir outputs\eval
 ```
 
 ## Coding Style & Naming Conventions
-Use Python 3.10+ syntax, type hints, and `pathlib.Path` for paths. Group imports as standard library, third-party, then local. Follow existing naming: `snake_case` functions/variables, `PascalCase` classes, and uppercase constants such as `SPLIT_NAMES`. Use 4-space indentation. Keep comments focused on dataset assumptions, shapes, and normalization.
+Use Python 3.10+ syntax, type hints, and `pathlib.Path` for paths. Group imports as standard library, third-party, then local. Follow existing naming: `snake_case` functions/variables, `PascalCase` classes, and uppercase constants such as `NUM_OPENPOSE_KEYPOINTS`. Use 4-space indentation. Keep comments focused on dataset assumptions, shapes, and normalization.
 
 ## Testing Guidelines
-Automated tests use `pytest`. Add tests for split generation, path validation, shape validation, normalization edge cases, model shape contracts, PCM/PAF target synthesis, heatmap decoder stage outputs, and HDF5 round-tripping. Name files `test_*.py` and tests `test_<behavior>()`. Use temporary directories and tiny synthetic fixtures.
+Automated tests use `pytest`. Add tests for split generation, path validation, shape validation, normalization edge cases, model shape contracts, PCM/PAF target synthesis, heatmap decoder stage outputs, and memmap dataset loading. Name files `test_*.py` and tests `test_<behavior>()`. Use temporary directories and tiny synthetic fixtures.
 
 Training and evaluation outputs are written under `outputs/` by default. Checkpoints include `best_val_mpjpe.pth`, `best_val_pck_0_2.pth`, and `last.pth`; epoch metrics are appended to `train_log.csv`. Evaluation visualizations are saved as `.png` files grouped by action/environment samples.
 
 ## Commit & Pull Request Guidelines
-This checkout has no `.git` history, so no convention can be inferred. Use concise imperative commits, for example `Add HDF5 split preview`. Pull requests should include a summary, commands run, dataset assumptions, and relevant shape or frame-count output. Do not commit generated datasets, virtual environments, or machine-specific paths.
+This checkout has no `.git` history, so no convention can be inferred. Use concise imperative commits, for example `Add NPY memmap dataset support`. Pull requests should include a summary, commands run, dataset assumptions, and relevant shape or frame-count output. Do not commit generated datasets, virtual environments, or machine-specific paths.
 
 ## Security & Configuration Tips
 Do not hard-code private dataset locations beyond documented defaults. Pass dataset paths with `--dataset-root` and keep large or sensitive data outside version control.

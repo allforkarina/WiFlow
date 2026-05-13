@@ -8,22 +8,22 @@ from models import WiFlowJointDecoder
 
 def test_wiflow_joint_decoder_output_shape() -> None:
     decoder = WiFlowJointDecoder()
-    x = torch.randn(4, 256, 29, 10)
+    x = torch.randn(4, 256, 29, 16)
 
     y = decoder(x)
 
-    assert y.shape == (4, 17, 2)
+    assert y.shape == (4, 18, 2)
 
 
 def test_wiflow_joint_decoder_configuration() -> None:
     decoder = WiFlowJointDecoder()
 
-    assert decoder.num_queries == 17
+    assert decoder.num_queries == 18
     assert decoder.embedding_dim == 256
     assert decoder.num_layers == 3
-    assert decoder.joint_queries.shape == (17, 256)
+    assert decoder.joint_queries.shape == (18, 256)
     assert torch.equal(decoder.joint_queries, torch.zeros_like(decoder.joint_queries))
-    assert decoder.adjacency.shape == (17, 17)
+    assert decoder.adjacency.shape == (18, 18)
     assert "adjacency" in dict(decoder.named_buffers())
     assert "adjacency" not in dict(decoder.named_parameters())
     assert isinstance(decoder.cross_attention_layers, nn.ModuleList)
@@ -49,11 +49,11 @@ def test_wiflow_joint_decoder_configuration() -> None:
 
 def test_wiflow_joint_decoder_flattens_spatial_tokens() -> None:
     decoder = WiFlowJointDecoder()
-    x = torch.randn(2, 256, 29, 10)
+    x = torch.randn(2, 256, 29, 16)
 
     tokens = decoder.flatten_tokens(x)
 
-    assert tokens.shape == (2, 290, 256)
+    assert tokens.shape == (2, 464, 256)
 
 
 def test_wiflow_joint_decoder_supports_configurable_layer_count() -> None:

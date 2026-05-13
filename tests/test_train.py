@@ -2,91 +2,31 @@ from __future__ import annotations
 
 import torch
 
-from dataloader import DEFAULT_SPLIT_SCHEME
 from models import DECODER_TYPES
 from train import (
-    DEFAULT_CSI_FEATURES,
-    SUPPORTED_CSI_FEATURES,
     TrainConfig,
     bone_length_loss,
     compute_losses,
     compute_metrics,
-    csi_feature_string,
-    effective_sequence_length,
     parse_args,
-    parse_csi_features,
     prepare_model_input,
 )
 
 
-def test_parse_csi_features_supports_default_and_amp_only() -> None:
-    assert parse_csi_features("csi_amplitude,csi_phase_cos") == DEFAULT_CSI_FEATURES
-    assert parse_csi_features("csi_amplitude") == ("csi_amplitude",)
-    assert SUPPORTED_CSI_FEATURES == ("csi_amplitude", "csi_phase_cos")
-
-
-def test_parse_csi_features_rejects_empty_duplicate_and_unknown() -> None:
-    for value in ("", "csi_amplitude,csi_amplitude", "csi_phase_sin"):
-        try:
-            parse_csi_features(value)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"Expected parse_csi_features to reject {value!r}")
-
-
-def test_csi_feature_string_joins_feature_names() -> None:
-    assert csi_feature_string(DEFAULT_CSI_FEATURES) == "csi_amplitude,csi_phase_cos"
-
-
-def test_prepare_model_input_concatenates_configured_csi_features() -> None:
-    amplitude = torch.ones(2, 3, 114, 10)
-    phase_cos = torch.zeros(2, 3, 114, 10)
+def test_prepare_model_input_extracts_csi_and_keypoints() -> None:
     batch = {
-        "csi_amplitude": amplitude,
-        "csi_phase_cos": phase_cos,
-        "keypoints": torch.randn(2, 17, 2),
+        "csi_amplitude": torch.randn(2, 3, 114, 64),
+        "keypoints": torch.randn(2, 18, 2),
     }
 
-    model_input, target = prepare_model_input(batch, torch.device("cpu"), DEFAULT_CSI_FEATURES)
+    model_input, target = prepare_model_input(batch, torch.device("cpu"))
 
-    assert model_input.shape == (2, 6, 114, 10)
-    assert target.shape == (2, 17, 2)
-    assert torch.equal(model_input[:, :3], amplitude)
-    assert torch.equal(model_input[:, 3:], phase_cos)
-
-
-def test_prepare_model_input_supports_amp_only() -> None:
-    batch = {
-        "csi_amplitude": torch.randn(2, 3, 114, 10),
-        "keypoints": torch.randn(2, 17, 2),
-    }
-
-    model_input, target = prepare_model_input(batch, torch.device("cpu"), ("csi_amplitude",))
-
-    assert model_input.shape == (2, 3, 114, 10)
-    assert target.shape == (2, 17, 2)
-
-
-def test_prepare_model_input_concatenates_sequence_features() -> None:
-    amplitude = torch.ones(2, 8, 3, 114, 10)
-    phase_cos = torch.zeros(2, 8, 3, 114, 10)
-    batch = {
-        "csi_amplitude": amplitude,
-        "csi_phase_cos": phase_cos,
-        "keypoints": torch.randn(2, 17, 2),
-    }
-
-    model_input, target = prepare_model_input(batch, torch.device("cpu"), DEFAULT_CSI_FEATURES)
-
-    assert model_input.shape == (2, 8, 6, 114, 10)
-    assert target.shape == (2, 17, 2)
-    assert torch.equal(model_input[:, :, :3], amplitude)
-    assert torch.equal(model_input[:, :, 3:], phase_cos)
+    assert model_input.shape == (2, 3, 114, 64)
+    assert target.shape == (2, 18, 2)
 
 
 def test_bone_length_loss_is_zero_for_matching_skeletons() -> None:
-    target = torch.randn(3, 17, 2)
+    target = torch.randn(3, 18, 2)
 
     loss = bone_length_loss(target, target)
 
@@ -94,8 +34,8 @@ def test_bone_length_loss_is_zero_for_matching_skeletons() -> None:
 
 
 def test_compute_losses_returns_weighted_total() -> None:
-    prediction = torch.zeros(2, 17, 2)
-    target = torch.ones(2, 17, 2)
+    prediction = torch.zeros(2, 18, 2)
+    target = torch.ones(2, 18, 2)
 
     losses = compute_losses(prediction, target, bone_loss_weight=0.5)
 
@@ -107,7 +47,7 @@ def test_compute_losses_returns_weighted_total() -> None:
 
 
 def test_compute_metrics_returns_mpjpe_and_pck_values() -> None:
-    target = torch.zeros(1, 17, 2)
+    target = torch.zeros(1, 18, 2)
     target[0, 6] = torch.tensor([1.0, 0.0])
     target[0, 11] = torch.tensor([0.0, 0.0])
     prediction = target.clone()
@@ -119,16 +59,13 @@ def test_compute_metrics_returns_mpjpe_and_pck_values() -> None:
     assert torch.isclose(metrics["pck_0_5"], torch.tensor(1.0))
 
 
-def test_train_config_uses_refactor_defaults() -> None:
-    config = TrainConfig(dataset_root="data/mmfi_pose.h5")
+def test_train_config_uses_defaults() -> None:
+    config = TrainConfig(dataset_root="data/mmfi_pose")
 
     assert config.epochs == 50
     assert config.batch_size == 64
-    assert config.split_scheme == DEFAULT_SPLIT_SCHEME
-    assert config.csi_features == DEFAULT_CSI_FEATURES
     assert config.axial_mode == "spatial_then_temporal"
     assert config.decoder_type == "joint"
-    assert config.sequence_length == 1
     assert config.lr == 2e-5
     assert config.max_lr == 5e-4
     assert config.weight_decay == 5e-4
@@ -141,17 +78,17 @@ def test_train_config_uses_refactor_defaults() -> None:
 
 
 def test_compute_losses_supports_heatmap_msfn_output() -> None:
-    target = torch.full((2, 17, 2), 0.5)
+    target = torch.full((2, 18, 2), 0.5)
     prediction = {
         "keypoints": target.clone(),
         "stages": [
             {
-                "pcm": torch.zeros(2, 17, 36, 36),
-                "paf": torch.zeros(2, 32, 36, 36),
+                "pcm": torch.zeros(2, 18, 36, 36),
+                "paf": torch.zeros(2, 38, 36, 36),
             },
             {
-                "pcm": torch.zeros(2, 17, 36, 36),
-                "paf": torch.zeros(2, 32, 36, 36),
+                "pcm": torch.zeros(2, 18, 36, 36),
+                "paf": torch.zeros(2, 38, 36, 36),
             },
         ],
     }
@@ -164,31 +101,17 @@ def test_compute_losses_supports_heatmap_msfn_output() -> None:
     assert torch.isclose(losses["bone_loss"], torch.tensor(0.0))
 
 
-def test_effective_sequence_length_keeps_action_env_and_downgrades_frame_random() -> None:
-    assert effective_sequence_length("action_env", 8) == 8
-    assert effective_sequence_length("frame_random", 8) == 1
-
-    try:
-        effective_sequence_length("action_env", 0)
-    except ValueError as exc:
-        assert "at least 1" in str(exc)
-    else:
-        raise AssertionError("Expected effective_sequence_length to reject non-positive values")
-
-
-def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
+def test_parse_args_accepts_axial_mode_and_decoder_type(monkeypatch) -> None:
     monkeypatch.setattr(
         "sys.argv",
         [
             "train.py",
             "--dataset-root",
-            "data/mmfi_pose.h5",
+            "data/mmfi_pose",
             "--axial-mode",
             "parallel_concat",
             "--decoder-type",
             "hierarchical",
-            "--sequence-length",
-            "8",
             "--heatmap-size",
             "40",
         ],
@@ -198,6 +121,5 @@ def test_parse_args_accepts_axial_mode(monkeypatch) -> None:
 
     assert args.axial_mode == "parallel_concat"
     assert args.decoder_type == "hierarchical"
-    assert args.sequence_length == 8
     assert args.heatmap_size == 40
     assert DECODER_TYPES == ("joint", "hierarchical", "heatmap_msfn")

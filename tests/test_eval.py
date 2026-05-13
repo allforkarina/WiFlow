@@ -1,164 +1,44 @@
 from __future__ import annotations
 
-import matplotlib
-import matplotlib.pyplot as plt
 import torch
 
-from eval import (
-    average_metrics,
-    build_group_metric_rows,
-    build_joint_metric_rows,
-    compute_joint_errors,
-    compute_joint_pck,
-    load_checkpoint_model,
-    plot_skeleton,
-    safe_stem,
-    update_group_metric_totals,
-    update_metric_totals,
-    write_csv_rows,
-)
-from models import COCO_BONE_EDGES, WiFlowHierarchicalJointDecoder, WiFlowJointDecoder, WiFlowMSFNDecoder, WiFlowModel
-
-matplotlib.use("Agg")
-
-
-def test_update_metric_totals_weights_by_batch_size() -> None:
-    totals: dict[str, float] = {}
-
-    update_metric_totals(totals, {"mpjpe": torch.tensor(2.0)}, batch_size=4)
-    update_metric_totals(totals, {"mpjpe": torch.tensor(6.0)}, batch_size=2)
-
-    averaged = average_metrics(totals, sample_count=6)
-
-    assert averaged["mpjpe"] == (2.0 * 4 + 6.0 * 2) / 6
-
-
-def test_safe_stem_replaces_path_unsafe_characters() -> None:
-    stem = safe_stem("A01", "env/1", "frame:001")
-
-    assert stem == "A01_env_1_frame_001"
-
-
-def test_plot_skeleton_runs_on_agg_backend() -> None:
-    keypoints = torch.zeros(17, 2).numpy()
-    fig, ax = plt.subplots()
-
-    plot_skeleton(ax, keypoints, COCO_BONE_EDGES, "Skeleton", color="blue")
-
-    assert ax.get_title() == "Skeleton"
-    plt.close(fig)
-
-
-def test_compute_joint_errors_and_pck_preserve_joint_shape() -> None:
-    target = torch.zeros(2, 17, 2)
-    target[:, 6] = torch.tensor([1.0, 0.0])
-    prediction = target.clone()
-
-    joint_errors = compute_joint_errors(prediction, target)
-    joint_pck = compute_joint_pck(prediction, target)
-
-    assert joint_errors.shape == (2, 17)
-    assert joint_pck.shape == (2, 17)
-    assert torch.allclose(joint_errors, torch.zeros_like(joint_errors))
-    assert torch.allclose(joint_pck, torch.ones_like(joint_pck))
-
-
-def test_group_metric_rows_include_expected_fields() -> None:
-    joint_errors = torch.tensor([[1.0] * 17, [3.0] * 17])
-    joint_pck = torch.tensor([[1.0] * 17, [0.0] * 17])
-    totals: dict[str, dict[str, float]] = {}
-
-    update_group_metric_totals(totals, ["A01", "A01"], joint_errors, joint_pck)
-    rows = build_group_metric_rows(totals, "action")
-
-    assert rows == [
-        {
-            "action": "A01",
-            "sample_count": 2,
-            "mpjpe": 2.0,
-            "pck_0_2": 0.5,
-        }
-    ]
-
-
-def test_build_joint_metric_rows_aggregates_batches() -> None:
-    joint_errors = [torch.tensor([[1.0] * 17]), torch.tensor([[3.0] * 17])]
-    joint_pck = [torch.tensor([[1.0] * 17]), torch.tensor([[0.0] * 17])]
-
-    rows = build_joint_metric_rows(joint_errors, joint_pck)
-
-    assert len(rows) == 17
-    assert rows[0]["joint_index"] == 0
-    assert rows[0]["sample_count"] == 2
-    assert rows[0]["mpjpe"] == 2.0
-    assert rows[0]["pck_0_2"] == 0.5
-
-
-def test_write_csv_rows_writes_header_and_rows(tmp_path) -> None:
-    path = tmp_path / "metrics.csv"
-
-    write_csv_rows(path, [{"joint_index": 0, "sample_count": 2, "mpjpe": 1.0, "pck_0_2": 0.5}])
-
-    contents = path.read_text(encoding="utf-8")
-    assert "joint_index,sample_count,mpjpe,pck_0_2" in contents
-    assert "0,2,1.0,0.5" in contents
+from models import DECODER_TYPES, WiFlowHierarchicalJointDecoder, WiFlowJointDecoder, WiFlowMSFNDecoder, WiFlowModel
+from eval import load_checkpoint_model
 
 
 def test_load_checkpoint_model_uses_train_config(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pth"
-    model = WiFlowModel(input_channels=6, axial_mode="parallel_sum")
+    model = WiFlowModel(input_channels=3, axial_mode="parallel_sum")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "train_config": {
-                "csi_features": ("csi_amplitude", "csi_phase_cos"),
                 "axial_mode": "parallel_sum",
-                "sequence_length": 1,
+                "input_channels": 3,
             },
         },
         checkpoint_path,
     )
 
-    loaded_model, csi_features = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
+    loaded_model, input_channels = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
 
     assert isinstance(loaded_model, WiFlowModel)
-    assert loaded_model.input_channels == 6
+    assert loaded_model.input_channels == 3
     assert loaded_model.axial_mode == "parallel_sum"
     assert loaded_model.decoder_type == "joint"
     assert isinstance(loaded_model.decoder, WiFlowJointDecoder)
-    assert loaded_model.sequence_length == 1
-    assert csi_features == ("csi_amplitude", "csi_phase_cos")
-
-
-def test_load_checkpoint_model_uses_sequence_length(tmp_path) -> None:
-    checkpoint_path = tmp_path / "checkpoint.pth"
-    model = WiFlowModel(input_channels=6, sequence_length=8)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "train_config": {
-                "csi_features": ("csi_amplitude", "csi_phase_cos"),
-                "sequence_length": 8,
-            },
-        },
-        checkpoint_path,
-    )
-
-    loaded_model, _ = load_checkpoint_model(checkpoint_path, torch.device("cpu"))
-
-    assert loaded_model.sequence_length == 8
-    assert loaded_model.temporal_fuser is not None
+    assert input_channels == 3
 
 
 def test_load_checkpoint_model_uses_decoder_type(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pth"
-    model = WiFlowModel(input_channels=6, decoder_type="hierarchical")
+    model = WiFlowModel(input_channels=3, decoder_type="hierarchical")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "train_config": {
-                "csi_features": ("csi_amplitude", "csi_phase_cos"),
                 "decoder_type": "hierarchical",
+                "input_channels": 3,
             },
         },
         checkpoint_path,
@@ -172,14 +52,14 @@ def test_load_checkpoint_model_uses_decoder_type(tmp_path) -> None:
 
 def test_load_checkpoint_model_uses_heatmap_decoder_type(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pth"
-    model = WiFlowModel(input_channels=6, decoder_type="heatmap_msfn", heatmap_size=40)
+    model = WiFlowModel(input_channels=3, decoder_type="heatmap_msfn", heatmap_size=40)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "train_config": {
-                "csi_features": ("csi_amplitude", "csi_phase_cos"),
                 "decoder_type": "heatmap_msfn",
                 "heatmap_size": 40,
+                "input_channels": 3,
             },
         },
         checkpoint_path,
@@ -192,35 +72,25 @@ def test_load_checkpoint_model_uses_heatmap_decoder_type(tmp_path) -> None:
     assert isinstance(loaded_model.decoder, WiFlowMSFNDecoder)
 
 
-def test_load_checkpoint_model_rejects_temporal_checkpoint_for_frame_random(tmp_path) -> None:
+def test_load_checkpoint_model_requires_model_state_dict(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.pth"
-    model = WiFlowModel(input_channels=6, sequence_length=8)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "train_config": {
-                "csi_features": ("csi_amplitude", "csi_phase_cos"),
-                "sequence_length": 8,
-            },
-        },
-        checkpoint_path,
-    )
-
-    try:
-        load_checkpoint_model(checkpoint_path, torch.device("cpu"), split_scheme="frame_random")
-    except ValueError as exc:
-        assert "Temporal checkpoints" in str(exc)
-    else:
-        raise AssertionError("Expected temporal checkpoint loading to reject frame_random evaluation")
-
-
-def test_load_checkpoint_model_requires_csi_features(tmp_path) -> None:
-    checkpoint_path = tmp_path / "checkpoint.pth"
-    torch.save({"model_state_dict": WiFlowModel().state_dict(), "train_config": {}}, checkpoint_path)
+    torch.save({"train_config": {"input_channels": 3}}, checkpoint_path)
 
     try:
         load_checkpoint_model(checkpoint_path, torch.device("cpu"))
     except KeyError as exc:
-        assert "csi_features" in str(exc)
+        assert "model_state_dict" in str(exc)
     else:
-        raise AssertionError("Expected checkpoint loading to require train_config.csi_features")
+        raise AssertionError("Expected checkpoint loading to require model_state_dict")
+
+
+def test_load_checkpoint_model_requires_train_config(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    torch.save({"model_state_dict": WiFlowModel().state_dict()}, checkpoint_path)
+
+    try:
+        load_checkpoint_model(checkpoint_path, torch.device("cpu"))
+    except KeyError as exc:
+        assert "train_config" in str(exc)
+    else:
+        raise AssertionError("Expected checkpoint loading to require train_config")

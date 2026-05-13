@@ -1,4 +1,4 @@
-from .skeleton import COCO_BONE_EDGES, NUM_COCO_KEYPOINTS, build_normalized_adjacency
+from .skeleton import NUM_OPENPOSE_KEYPOINTS, OPENPOSE_BONE_EDGES, build_normalized_adjacency
 from .wiflow_attention_pooler import WiFlowAttentionPooler
 from .wiflow_axial_encoder import AXIAL_ENCODER_MODES, WiFlowAxialEncoder
 from .wiflow_heatmap_decoder import WiFlowHeatmapDecoder, WiFlowMSFNDecoder, WiFlowPAPM
@@ -25,7 +25,7 @@ __all__ = [
     "WiFlowSkeletonDecoder",
     "WiFlowSpatialTemporalFuser",
     "WiFlowTemporalEncoder",
-    "COCO_BONE_EDGES",
-    "NUM_COCO_KEYPOINTS",
+    "OPENPOSE_BONE_EDGES",
+    "NUM_OPENPOSE_KEYPOINTS",
     "build_normalized_adjacency",
 ]

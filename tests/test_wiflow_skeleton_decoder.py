@@ -12,17 +12,17 @@ def test_wiflow_skeleton_decoder_output_shape() -> None:
 
     y = decoder(x)
 
-    assert y.shape == (4, 17, 2)
+    assert y.shape == (4, 18, 2)
 
 
 def test_wiflow_skeleton_decoder_configuration() -> None:
     decoder = WiFlowSkeletonDecoder()
 
-    assert decoder.num_queries == 17
+    assert decoder.num_queries == 18
     assert decoder.embedding_dim == 256
     assert decoder.num_heads == 4
-    assert decoder.joint_queries.shape == (17, 256)
-    assert decoder.adjacency.shape == (17, 17)
+    assert decoder.joint_queries.shape == (18, 256)
+    assert decoder.adjacency.shape == (18, 18)
     assert "adjacency" in dict(decoder.named_buffers())
     assert "adjacency" not in dict(decoder.named_parameters())
     assert isinstance(decoder.joint_attention, nn.MultiheadAttention)

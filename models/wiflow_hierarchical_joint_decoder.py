@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .skeleton import NUM_COCO_KEYPOINTS, build_normalized_adjacency
+from .skeleton import NUM_OPENPOSE_KEYPOINTS, build_normalized_adjacency
 
 
 class WiFlowHierarchicalJointDecoderStage(nn.Module):
@@ -66,20 +66,20 @@ class WiFlowHierarchicalJointDecoderStage(nn.Module):
 
 
 class WiFlowHierarchicalJointDecoder(nn.Module):
-    """Decode COCO17 coordinates through staged coarse-to-fine joint retrieval."""
+    """Decode OpenPose18 coordinates through staged coarse-to-fine joint retrieval."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.num_queries = NUM_COCO_KEYPOINTS
+        self.num_queries = NUM_OPENPOSE_KEYPOINTS
         self.embedding_dim = 256
         self.num_heads = 4
         self.stage_indices = (
-            (0, 5, 6, 11, 12),
-            (1, 2, 3, 4, 7, 8, 13, 14),
-            (9, 10, 15, 16),
+            (0, 1, 2, 5, 8, 11),
+            (3, 4, 6, 7, 9, 10, 12, 13),
+            (14, 15, 16, 17),
         )
         self.stage_order = tuple(joint for stage in self.stage_indices for joint in stage)
-        self.coco_order = tuple(self.stage_order.index(joint) for joint in range(self.num_queries))
+        self.openpose_order = tuple(self.stage_order.index(joint) for joint in range(self.num_queries))
         self.joint_queries = nn.Parameter(torch.zeros(self.num_queries, self.embedding_dim))
         self.stages = nn.ModuleList(
             WiFlowHierarchicalJointDecoderStage(
@@ -107,7 +107,7 @@ class WiFlowHierarchicalJointDecoder(nn.Module):
 
     def flatten_tokens(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 4:
-            raise ValueError("WiFlowHierarchicalJointDecoder expects input shaped [B, 256, 29, 10]")
+            raise ValueError("WiFlowHierarchicalJointDecoder expects input shaped [B, 256, 29, 16]")
         return x.flatten(2).transpose(1, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -124,8 +124,8 @@ class WiFlowHierarchicalJointDecoder(nn.Module):
             context_parts.append(stage_output)
             stage_outputs.append(stage_output)
 
-        coco_order = torch.as_tensor(self.coco_order, dtype=torch.long, device=tokens.device)
-        h = torch.cat(stage_outputs, dim=1)[:, coco_order]
+        openpose_order = torch.as_tensor(self.openpose_order, dtype=torch.long, device=tokens.device)
+        h = torch.cat(stage_outputs, dim=1)[:, openpose_order]
         gnn_output = torch.matmul(self.adjacency, self.gnn_projection(h))
         gnn_output = self.gnn_activation(gnn_output)
         h = self.gnn_norm(h + gnn_output)
