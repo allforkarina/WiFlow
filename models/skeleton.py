@@ -1,37 +1,46 @@
+"""H36M-17 skeleton topology constants and adjacency builder."""
+
 from __future__ import annotations
 
 import torch
 
 
-NUM_OPENPOSE_KEYPOINTS = 18
-OPENPOSE_BONE_EDGES: tuple[tuple[int, int], ...] = (
-    (0, 1),
-    (1, 2),
-    (2, 3),
-    (3, 4),
-    (1, 5),
-    (5, 6),
-    (6, 7),
-    (1, 8),
-    (8, 9),
-    (9, 10),
-    (1, 11),
-    (11, 12),
-    (12, 13),
-    (0, 14),
-    (14, 16),
-    (0, 15),
-    (15, 17),
-    (2, 5),
-    (8, 11),
+NUM_H36M_KEYPOINTS = 17
+
+H36M17_NAMES = [
+    "pelvis",
+    "r_hip",
+    "r_knee",
+    "r_ankle",
+    "l_hip",
+    "l_knee",
+    "l_ankle",
+    "spine",
+    "thorax",
+    "neck",
+    "head",
+    "l_shoulder",
+    "l_elbow",
+    "l_wrist",
+    "r_shoulder",
+    "r_elbow",
+    "r_wrist",
+]
+
+H36M_BONE_EDGES: tuple[tuple[int, int], ...] = (
+    (0, 1), (1, 2), (2, 3),       # right leg
+    (0, 4), (4, 5), (5, 6),       # left leg
+    (0, 7), (7, 8), (8, 9), (9, 10),  # spine -> head
+    (8, 11), (11, 12), (12, 13),  # left arm
+    (8, 14), (14, 15), (15, 16),  # right arm
 )
 
 
 def build_normalized_adjacency(
-    num_nodes: int = NUM_OPENPOSE_KEYPOINTS,
-    edges: tuple[tuple[int, int], ...] = OPENPOSE_BONE_EDGES,
+    num_nodes: int = NUM_H36M_KEYPOINTS,
+    edges: tuple[tuple[int, int], ...] = H36M_BONE_EDGES,
 ) -> torch.Tensor:
-    """Build symmetric normalized adjacency with self-loops for OpenPose keypoints."""
+    """Build symmetric normalized adjacency with self-loops for H36M-17 keypoints."""
 
     adjacency = torch.eye(num_nodes, dtype=torch.float32)
     for start, end in edges:

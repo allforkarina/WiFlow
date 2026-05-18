@@ -1,3 +1,6 @@
+# DEPRECATED: use pose_targets.py for online H36M-17 PCM/PAF generation.
+# This module is kept for reference only and will be removed in a future version.
+
 from __future__ import annotations
 
 from typing import Iterable, Tuple

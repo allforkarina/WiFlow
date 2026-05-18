@@ -12,16 +12,16 @@ import torch.nn.functional as F
 from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler, OneCycleLR
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from dataloader import create_memmap_data_loaders
-from models import AXIAL_ENCODER_MODES, DECODER_TYPES, OPENPOSE_BONE_EDGES, WiFlowModel
+from models import AXIAL_ENCODER_MODES, DECODER_TYPES, H36M_BONE_EDGES, WiFlowModel
 from pose_targets import build_pcm_paf_targets
 
 
 PCK_THRESHOLDS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)
-RIGHT_SHOULDER_INDEX = 2
-LEFT_HIP_INDEX = 11
+RIGHT_SHOULDER_INDEX = 14
+LEFT_HIP_INDEX = 4
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,6 @@ class TrainConfig:
     num_workers: int = 4
     device: str = "cuda"
     seed: int = 42
-    subset_size: int | None = None
 
 
 def prepare_model_input(
@@ -59,7 +58,7 @@ def prepare_model_input(
 def bone_length_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    edges: tuple[tuple[int, int], ...] = OPENPOSE_BONE_EDGES,
+    edges: tuple[tuple[int, int], ...] = H36M_BONE_EDGES,
 ) -> torch.Tensor:
     edge_index = torch.as_tensor(edges, dtype=torch.long, device=prediction.device)
     pred_lengths = torch.linalg.vector_norm(
@@ -92,6 +91,7 @@ def compute_losses(
     heatmap_sigma: float = 1.5,
     paf_width: float = 1.0,
     paf_loss_weight: float = 1.0,
+    pose_range: tuple[float, float] = (-0.8, 0.8),
 ) -> Dict[str, torch.Tensor]:
     zero = torch.zeros((), dtype=target.dtype, device=target.device)
     if isinstance(prediction, Mapping):
@@ -103,6 +103,7 @@ def compute_losses(
             heatmap_size=heatmap_size,
             sigma=heatmap_sigma,
             paf_width=paf_width,
+            pose_range=pose_range,
         )
         pcm_total = zero
         paf_total = zero
@@ -245,18 +246,6 @@ def append_csv_row(path: Path, row: Mapping[str, float | int | str]) -> None:
         writer.writerow(row)
 
 
-def maybe_subset_loader(loader: DataLoader, subset_size: int | None) -> DataLoader:
-    if subset_size is None:
-        return loader
-    subset_indices = list(range(min(subset_size, len(loader.dataset))))
-    return DataLoader(
-        Subset(loader.dataset, subset_indices),
-        batch_size=loader.batch_size,
-        shuffle=True,
-        num_workers=loader.num_workers,
-    )
-
-
 def select_device(device_name: str) -> torch.device:
     if device_name == "cuda" and not torch.cuda.is_available():
         return torch.device("cpu")
@@ -275,8 +264,8 @@ def run_training(config: TrainConfig) -> None:
         seed=config.seed,
     )
 
-    train_loader = maybe_subset_loader(loaders["train"], config.subset_size)
-    val_loader = maybe_subset_loader(loaders["val"], config.subset_size)
+    train_loader = loaders["train"]
+    val_loader = loaders["val"]
     model = WiFlowModel(
         input_channels=3,
         axial_mode=config.axial_mode,
@@ -416,7 +405,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--subset-size", type=int, default=None)
     return parser.parse_args()
 
 

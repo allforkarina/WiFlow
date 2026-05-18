@@ -4,20 +4,20 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .skeleton import NUM_OPENPOSE_KEYPOINTS, OPENPOSE_BONE_EDGES
+from .skeleton import H36M_BONE_EDGES, NUM_H36M_KEYPOINTS
 
-_OPENPOSE_PAF_CHANNELS = 2 * len(OPENPOSE_BONE_EDGES)
+_H36M_PAF_CHANNELS = 2 * len(H36M_BONE_EDGES)
 
 
 class WiFlowHeatmapDecoder(nn.Module):
-    """One MSFN stage that predicts OpenPose18 PCM and PAF heatmaps."""
+    """One MSFN stage that predicts H36M-17 PCM and PAF heatmaps."""
 
     def __init__(
         self,
         feature_channels: int = 128,
         hidden_channels: int = 512,
-        pcm_channels: int = NUM_OPENPOSE_KEYPOINTS,
-        paf_channels: int = _OPENPOSE_PAF_CHANNELS,
+        pcm_channels: int = NUM_H36M_KEYPOINTS,
+        paf_channels: int = _H36M_PAF_CHANNELS,
     ) -> None:
         super().__init__()
         self.shared = nn.Sequential(
@@ -50,7 +50,7 @@ class WiFlowHeatmapDecoder(nn.Module):
 class WiFlowPAPM(nn.Module):
     """Pose-aware feature modulation using previous-stage PCM/PAF heatmaps."""
 
-    def __init__(self, feature_channels: int = 128, heatmap_channels: int = NUM_OPENPOSE_KEYPOINTS + _OPENPOSE_PAF_CHANNELS) -> None:
+    def __init__(self, feature_channels: int = 128, heatmap_channels: int = NUM_H36M_KEYPOINTS + _H36M_PAF_CHANNELS) -> None:
         super().__init__()
         self.channel_gate = nn.Sequential(
             nn.Linear(heatmap_channels * 2, feature_channels),
@@ -89,8 +89,8 @@ class WiFlowMSFNDecoder(nn.Module):
         hidden_channels: int = 512,
         stages: int = 3,
         heatmap_size: int = 36,
-        pcm_channels: int = NUM_OPENPOSE_KEYPOINTS,
-        paf_channels: int = _OPENPOSE_PAF_CHANNELS,
+        pcm_channels: int = NUM_H36M_KEYPOINTS,
+        paf_channels: int = _H36M_PAF_CHANNELS,
     ) -> None:
         super().__init__()
         if stages < 1:

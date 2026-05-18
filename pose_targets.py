@@ -2,29 +2,36 @@ from __future__ import annotations
 
 import torch
 
-from models.skeleton import NUM_OPENPOSE_KEYPOINTS, OPENPOSE_BONE_EDGES
+from models.skeleton import H36M_BONE_EDGES, NUM_H36M_KEYPOINTS
 
 
-def keypoints_to_heatmap_coords(keypoints: torch.Tensor, heatmap_size: int) -> torch.Tensor:
-    """Map normalized OpenPose keypoints in [0, 1] to heatmap coordinates."""
+def keypoints_to_heatmap_coords(
+    keypoints: torch.Tensor,
+    heatmap_size: int,
+    pose_range: tuple[float, float] = (-0.8, 0.8),
+) -> torch.Tensor:
+    """Map H36M-17 keypoints from pose_range to heatmap coordinates."""
 
-    if keypoints.ndim != 3 or keypoints.shape[-2:] != (NUM_OPENPOSE_KEYPOINTS, 2):
-        raise ValueError(f"Expected keypoints shaped [B, 18, 2], got {tuple(keypoints.shape)}")
+    if keypoints.ndim != 3 or keypoints.shape[-2:] != (NUM_H36M_KEYPOINTS, 2):
+        raise ValueError(f"Expected keypoints shaped [B, 17, 2], got {tuple(keypoints.shape)}")
     if heatmap_size < 2:
         raise ValueError("heatmap_size must be at least 2")
-    return keypoints.clamp(0.0, 1.0) * float(heatmap_size - 1)
+    pose_min, pose_max = pose_range
+    span = pose_max - pose_min
+    return ((keypoints - pose_min) / span * float(heatmap_size - 1)).clamp(0.0, float(heatmap_size - 1))
 
 
 def build_pcm_targets(
     keypoints: torch.Tensor,
     heatmap_size: int = 36,
     sigma: float = 1.5,
+    pose_range: tuple[float, float] = (-0.8, 0.8),
 ) -> torch.Tensor:
-    """Build per-joint Gaussian PCM targets from normalized OpenPose18 keypoints."""
+    """Build per-joint Gaussian PCM targets from H36M-17 keypoints in pose_range."""
 
     if sigma <= 0:
         raise ValueError("sigma must be positive")
-    coords = keypoints_to_heatmap_coords(keypoints, heatmap_size)
+    coords = keypoints_to_heatmap_coords(keypoints, heatmap_size, pose_range=pose_range)
     grid_y, grid_x = torch.meshgrid(
         torch.arange(heatmap_size, dtype=keypoints.dtype, device=keypoints.device),
         torch.arange(heatmap_size, dtype=keypoints.dtype, device=keypoints.device),
@@ -40,13 +47,14 @@ def build_paf_targets(
     keypoints: torch.Tensor,
     heatmap_size: int = 36,
     width: float = 1.0,
-    edges: tuple[tuple[int, int], ...] = OPENPOSE_BONE_EDGES,
+    edges: tuple[tuple[int, int], ...] = H36M_BONE_EDGES,
+    pose_range: tuple[float, float] = (-0.8, 0.8),
 ) -> torch.Tensor:
-    """Build OpenPose bone PAF targets with one x/y vector channel pair per edge."""
+    """Build H36M-17 bone PAF targets from keypoints in pose_range."""
 
     if width <= 0:
         raise ValueError("width must be positive")
-    coords = keypoints_to_heatmap_coords(keypoints, heatmap_size)
+    coords = keypoints_to_heatmap_coords(keypoints, heatmap_size, pose_range=pose_range)
     edge_index = torch.as_tensor(edges, dtype=torch.long, device=keypoints.device)
     p1 = coords[:, edge_index[:, 0]]
     p2 = coords[:, edge_index[:, 1]]
@@ -87,20 +95,23 @@ def build_pcm_paf_targets(
     heatmap_size: int = 36,
     sigma: float = 1.5,
     paf_width: float = 1.0,
+    pose_range: tuple[float, float] = (-0.8, 0.8),
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return (
-        build_pcm_targets(keypoints, heatmap_size=heatmap_size, sigma=sigma),
-        build_paf_targets(keypoints, heatmap_size=heatmap_size, width=paf_width),
+        build_pcm_targets(keypoints, heatmap_size=heatmap_size, sigma=sigma, pose_range=pose_range),
+        build_paf_targets(keypoints, heatmap_size=heatmap_size, width=paf_width, pose_range=pose_range),
     )
 
 
-def decode_pcm_argmax(pcm: torch.Tensor) -> torch.Tensor:
-    """Decode PCM heatmaps to normalized OpenPose18 coordinates with per-channel argmax."""
+def decode_pcm_argmax(pcm: torch.Tensor, pose_range: tuple[float, float] = (-0.8, 0.8)) -> torch.Tensor:
+    """Decode PCM heatmaps to H36M-17 coordinates in pose_range."""
 
-    if pcm.ndim != 4 or pcm.shape[1] != NUM_OPENPOSE_KEYPOINTS:
-        raise ValueError(f"Expected PCM shaped [B, 18, H, W], got {tuple(pcm.shape)}")
+    if pcm.ndim != 4 or pcm.shape[1] != NUM_H36M_KEYPOINTS:
+        raise ValueError(f"Expected PCM shaped [B, 17, H, W], got {tuple(pcm.shape)}")
     _, _, height, width = pcm.shape
+    pose_min, pose_max = pose_range
+    span = pose_max - pose_min
     flat_indices = pcm.flatten(2).argmax(dim=-1)
-    x = (flat_indices % width).to(dtype=pcm.dtype) / float(max(width - 1, 1))
-    y = torch.div(flat_indices, width, rounding_mode="floor").to(dtype=pcm.dtype) / float(max(height - 1, 1))
+    x = (flat_indices % width).to(dtype=pcm.dtype) / float(max(width - 1, 1)) * span + pose_min
+    y = torch.div(flat_indices, width, rounding_mode="floor").to(dtype=pcm.dtype) / float(max(height - 1, 1)) * span + pose_min
     return torch.stack((x, y), dim=-1)

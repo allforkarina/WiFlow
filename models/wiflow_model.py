@@ -14,7 +14,7 @@ DECODER_TYPES = ("joint", "hierarchical", "heatmap_msfn")
 
 
 class WiFlowModel(nn.Module):
-    """End-to-end WiFlow model that maps CSI features to OpenPose18 coordinates."""
+    """End-to-end WiFlow model that maps CSI features to H36M-17 coordinates."""
 
     def __init__(
         self,
@@ -22,6 +22,7 @@ class WiFlowModel(nn.Module):
         axial_mode: str = "spatial_then_temporal",
         decoder_type: str = "joint",
         heatmap_size: int = 36,
+        pose_range: tuple[float, float] = (-0.8, 0.8),
     ) -> None:
         super().__init__()
         if decoder_type not in DECODER_TYPES:
@@ -30,6 +31,7 @@ class WiFlowModel(nn.Module):
         self.axial_mode = axial_mode
         self.decoder_type = decoder_type
         self.heatmap_size = heatmap_size
+        self.pose_range = pose_range
         self.spatial_encoder = WiFlowSpatialEncoder(input_channels=input_channels)
         self.axial_encoder = WiFlowAxialEncoder(mode=axial_mode)
         if decoder_type == "joint":
@@ -44,7 +46,7 @@ class WiFlowModel(nn.Module):
         if self.decoder_type != "heatmap_msfn":
             return decoder_output
         stages = decoder_output
-        keypoints = decode_pcm_argmax(stages[-1]["pcm"])
+        keypoints = decode_pcm_argmax(stages[-1]["pcm"], pose_range=self.pose_range)
         return {"keypoints": keypoints, "stages": stages}
 
     def forward(self, x: torch.Tensor):

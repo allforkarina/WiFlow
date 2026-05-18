@@ -14,11 +14,11 @@ from train import compute_losses, prepare_model_input
 
 
 def diagnose_data_and_loss(dataset_dir: str):
-    print(f"=== Diagnosing Data and Initial Loss ===")
+    print(f"=== Diagnosing H36M-17 Data and Initial Loss ===")
     print(f"Dataset Path: {dataset_dir}")
 
     loader = create_memmap_data_loader(
-        dataset_root=dataset_dir,
+        data_dir=dataset_dir,
         split="train",
         batch_size=8,
         shuffle=False,
@@ -34,12 +34,12 @@ def diagnose_data_and_loss(dataset_dir: str):
     print(f"Sample 0 keypoints Y range: [{kpts0[:, 1].min().item():.4f}, {kpts0[:, 1].max().item():.4f}]")
 
     is_in_zero_one = (kpts0.min() >= 0.0) and (kpts0.max() <= 1.0)
-    is_in_neg_pos = (kpts0.min() >= -1.0) and (kpts0.max() <= 1.0) and (kpts0.min() < 0.0)
+    is_in_pose_range = (kpts0.min() >= -1.0) and (kpts0.max() <= 1.0) and (kpts0.min() < 0.0)
 
     if is_in_zero_one:
         print("-> Range looks like [0, 1]")
-    elif is_in_neg_pos:
-        print("-> Range looks like [-1, 1] or [-0.8, 0.8]")
+    elif is_in_pose_range:
+        print("-> Range looks like [-0.8, 0.8] (pose_range)")
     else:
         print("-> Range is outside expected normalized bounds!")
 
@@ -49,16 +49,16 @@ def diagnose_data_and_loss(dataset_dir: str):
     pcm_targets = build_pcm_targets(keypoints, heatmap_size=heatmap_size, sigma=sigma)
     print(f"PCM shape: {pcm_targets.shape}")
 
-    nose_pcm = pcm_targets[0, 0]
-    nose_max = nose_pcm.max().item()
-    print(f"Nose channel maximum peak value: {nose_max:.4f}")
-    if nose_max > 0.5:
-        print(f"-> VALID: Nose channel has a clear peak (> 0.5)")
+    pelvis_pcm = pcm_targets[0, 0]
+    pelvis_max = pelvis_pcm.max().item()
+    print(f"Pelvis (index 0) channel maximum peak value: {pelvis_max:.4f}")
+    if pelvis_max > 0.5:
+        print(f"-> VALID: Pelvis channel has a clear peak (> 0.5)")
     else:
-        print(f"-> WARNING: Nose channel peak is very low or nonexistent! Is the keypoint far out of bounds?")
+        print(f"-> WARNING: Pelvis channel peak is very low or nonexistent! Is the keypoint far out of bounds?")
 
-    origin_peak = nose_pcm[0, 0].item()
-    print(f"Nose channel value exactly at top-left origin (0, 0): {origin_peak:.4f}")
+    origin_peak = pelvis_pcm[0, 0].item()
+    print(f"Pelvis channel value exactly at top-left origin (0, 0): {origin_peak:.4f}")
 
     print("\n--- 3. Initial Loss Validation ---")
 

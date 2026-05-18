@@ -6,22 +6,23 @@ Training loader uses np.load(path, mmap_mode='r') for zero-copy OS-cached access
 
 Input:
     /data/WiFiPose/dataset/dataset/{ACTION}/{SUBJECT}/
-        wifi-csi/frame*.mat   ← CSIamp (3, 114, 10) float64
-        rgb/frame*.npy        ← COCO17 keypoints (17, 2) float32
+        wifi-csi/frame*.mat   ← CSIamp (3, 114, 10)
+        rgb/frame*.npy        ← COCO17 keypoints (17, 2) — reference only
 
 Output:
-    /data/WiFiPose/dataset/mmfi_pose_v3/
-        csi_gminmax.npy  ← global_minmax normalized (N, 64, 3, 114) float32
-        csi_gzscore.npy  ← global_zscore normalized (N, 64, 3, 114) float32
-        csi_zscore.npy   ← per-sample zscore normalized (N, 64, 3, 114) float32
-        ground_truth.npy ← OpenPose18, pose_range (N, 18, 2) float32
-        meta.npz         ← environment, sample, action, frame_idx
-        stats.json       ← normalization statistics
+    csi_gminmax.npy          ← (N, 64, 3, 114)
+    csi_gzscore.npy          ← (N, 64, 3, 114)
+    csi_zscore.npy           ← (N, 64, 3, 114)
+    ground_truth.npy         ← H36M-17 GT (N, 17, 2)
+    reference_keypoints.npy  ← raw COCO17 (N, 17, 2) — not for training
+    meta.npz
+    stats.json
 
 Usage:
     python scripts/build_memmap.py \
         --src /data/WiFiPose/dataset/dataset \
         --dst /data/WiFiPose/dataset/mmfi_pose_v3 \
+        --gt-dir /data/WiFiPose/dataset/ground_truth_npy \
         --train-subjects S01 S02 S03 S04 S05 S06 S07 S08 S09 S10 \
         --workers 8
 """
@@ -45,26 +46,6 @@ TIME_PACKETS = 64
 RX_ANTENNAS = 3
 SUBCARRIERS = 114
 
-COCO17_TO_OPENPOSE18 = {
-    0: 0,
-    2: 6,
-    3: 8,
-    4: 10,
-    5: 5,
-    6: 7,
-    7: 9,
-    8: 12,
-    9: 14,
-    10: 16,
-    11: 11,
-    12: 13,
-    13: 15,
-    14: 2,
-    15: 1,
-    16: 4,
-    17: 3,
-}
-
 
 def derive_env(subject: str) -> str:
     num = int(subject.lstrip("S"))
@@ -86,49 +67,6 @@ def preprocess_csi_one_frame(csi_amp: np.ndarray) -> np.ndarray:
     return np.transpose(csi_amp, (2, 0, 1)).astype(np.float32, copy=False)
 
 
-def _valid_point(point: np.ndarray) -> bool:
-    point = np.asarray(point)
-    return bool(np.isfinite(point).all() and not np.allclose(point, 0.0))
-
-
-def coco17_to_openpose18(kpts17: np.ndarray) -> np.ndarray:
-    kpts17 = np.asarray(kpts17, dtype=np.float32)
-    kpts18 = np.zeros((18, 2), dtype=np.float32)
-    valid = np.zeros(18, dtype=bool)
-    for op_idx, coco_idx in COCO17_TO_OPENPOSE18.items():
-        p = kpts17[coco_idx]
-        if _valid_point(p):
-            kpts18[op_idx] = p
-            valid[op_idx] = True
-    l_sh, r_sh = kpts17[5], kpts17[6]
-    if _valid_point(l_sh) and _valid_point(r_sh):
-        kpts18[1] = (l_sh + r_sh) * 0.5
-        valid[1] = True
-    elif _valid_point(l_sh):
-        kpts18[1] = l_sh; valid[1] = True
-    elif _valid_point(r_sh):
-        kpts18[1] = r_sh; valid[1] = True
-    kpts18[~valid] = 0.0
-    return kpts18
-
-
-def normalize_kpts_to_pose_range(
-    kpts: np.ndarray, pose_min: float = -0.8, pose_max: float = 0.8,
-) -> np.ndarray:
-    kpts = np.asarray(kpts, dtype=np.float32).copy()
-    non_zero = kpts[kpts != 0]
-    abs_max = float(np.abs(non_zero).max()) if len(non_zero) > 0 else 0.0
-    if abs_max > 10.0:
-        IMG_W, IMG_H = 1920.0, 1080.0
-        kpts[..., 0] /= IMG_W
-        kpts[..., 1] /= IMG_H
-        span = pose_max - pose_min
-        kpts = kpts * span + pose_min
-    invalid = ~np.isfinite(kpts).all(axis=-1) | np.all(np.isclose(kpts, 0.0), axis=-1)
-    kpts[invalid] = 0.0
-    return kpts.astype(np.float32)
-
-
 def iter_trials(src_root: Path) -> list[Path]:
     trials: list[Path] = []
     for action_dir in sorted(p for p in src_root.iterdir() if p.is_dir() and p.name.startswith("A")):
@@ -138,7 +76,13 @@ def iter_trials(src_root: Path) -> list[Path]:
     return trials
 
 
-def process_trial(trial_dir: Path, pose_min: float, pose_max: float) -> dict | None:
+def _parse_frame_number(stem: str) -> int:
+    if not stem.startswith("frame") or not stem[5:].isdigit():
+        raise ValueError(f"Expected frame filename pattern 'frame<num>', got: {stem}")
+    return int(stem[5:])
+
+
+def process_trial(trial_dir: Path) -> dict | None:
     action = trial_dir.parent.name
     subject = trial_dir.name
     wifi_dir = trial_dir / "wifi-csi"
@@ -151,27 +95,24 @@ def process_trial(trial_dir: Path, pose_min: float, pose_max: float) -> dict | N
 
     mat_stems = {p.stem: p for p in mat_paths}
     npy_stems = {p.stem: p for p in npy_paths}
-    common = sorted(set(mat_stems) & set(npy_stems))
+    common = sorted(set(mat_stems) & set(npy_stems), key=_parse_frame_number)
     if not common:
         return None
 
     n_frames = len(common)
     csi_frames = np.empty((n_frames, TIME_PACKETS, RX_ANTENNAS, SUBCARRIERS), dtype=np.float32)
-    kpts18 = np.zeros((n_frames, 18, 2), dtype=np.float32)
+    reference_kpts = np.zeros((n_frames, 17, 2), dtype=np.float32)
     frame_idx = np.zeros(n_frames, dtype=np.int64)
 
     for i, stem in enumerate(common):
         mat = sio.loadmat(str(mat_stems[stem]))
         csi_frames[i] = preprocess_csi_one_frame(np.asarray(mat["CSIamp"], dtype=np.float32))
-        kpts_coco17 = np.load(str(npy_stems[stem]))
-        kpts18[i] = normalize_kpts_to_pose_range(
-            coco17_to_openpose18(kpts_coco17), pose_min, pose_max
-        )
-        frame_idx[i] = int(stem.replace("frame", ""))
+        reference_kpts[i] = np.load(str(npy_stems[stem]))
+        frame_idx[i] = _parse_frame_number(stem)
 
     return {
         "csi": csi_frames,
-        "kpts18": kpts18,
+        "reference_keypoints": reference_kpts,
         "environment": derive_env(subject),
         "sample": subject,
         "action": action,
@@ -180,9 +121,9 @@ def process_trial(trial_dir: Path, pose_min: float, pose_max: float) -> dict | N
 
 
 def _worker(args):
-    trial_dir, pose_min, pose_max = args
+    trial_dir = args
     try:
-        result = process_trial(Path(trial_dir), pose_min, pose_max)
+        result = process_trial(Path(trial_dir))
         label = f"{Path(trial_dir).parent.name}/{Path(trial_dir).name}"
         return label, result, None
     except Exception:
@@ -199,11 +140,15 @@ def main():
     parser.add_argument("--src", default="/data/WiFiPose/dataset/dataset")
     parser.add_argument("--dst", default="/data/WiFiPose/dataset/mmfi_pose_v3")
     parser.add_argument("--train-subjects", nargs="+",
-                        default=["S01","S02","S03","S04","S05","S06","S07","S08","S09","S10"])
+                        default=["S01","S02","S03","S04","S05","S06","S07","S08","S09","S10",
+                                 "S11","S12","S13","S14","S15","S16","S17","S18","S19","S20"])
     parser.add_argument("--pose-min", type=float, default=-0.8)
     parser.add_argument("--pose-max", type=float, default=0.8)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--gt-dir", default="", help="Path to ground_truth_npy/ directory")
     args = parser.parse_args()
+    if not args.gt_dir:
+        parser.error("--gt-dir is required (path to ground_truth_npy/)")
 
     src_root = Path(args.src)
     dst_root = Path(args.dst)
@@ -214,20 +159,25 @@ def main():
     print(f"Found {len(trials)} trials")
 
     all_data: list[dict] = []
+    trial_results: dict[str, dict] = {}
     failures: list[tuple[str, str]] = []
     t0 = time.time()
 
     if args.workers <= 1:
         for i, trial in enumerate(trials):
             label = f"{trial.parent.name}/{trial.name}"
-            result = process_trial(trial, args.pose_min, args.pose_max)
+            result = process_trial(trial)
             if result:
-                all_data.append(result)
+                trial_results[str(trial)] = result
                 print(f"  [{i+1}/{len(trials)}] {label} ok N={result['csi'].shape[0]}")
             else:
                 print(f"  [{i+1}/{len(trials)}] {label} SKIP")
+        for trial in trials:
+            key = str(trial)
+            if key in trial_results:
+                all_data.append(trial_results[key])
     else:
-        tasks = [(str(t), args.pose_min, args.pose_max) for t in trials]
+        tasks = [str(t) for t in trials]
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             futs = {pool.submit(_worker, t): t for t in tasks}
             done = 0
@@ -238,10 +188,15 @@ def main():
                     failures.append((label, err))
                     print(f"  [{done}/{len(trials)}] {label} FAIL")
                 elif result:
-                    all_data.append(result)
+                    trial_path = futs[fut]
+                    trial_results[trial_path] = result
                     print(f"  [{done}/{len(trials)}] {label} ok N={result['csi'].shape[0]}")
                 else:
                     print(f"  [{done}/{len(trials)}] {label} SKIP")
+        for trial in trials:
+            key = str(trial)
+            if key in trial_results:
+                all_data.append(trial_results[key])
 
     dt = time.time() - t0
     print(f"\nPhase 1: {len(all_data)} ok, {len(failures)} fail ({dt:.1f}s)")
@@ -251,7 +206,7 @@ def main():
 
     print("Concatenating...")
     all_csi_raw  = np.concatenate([d["csi"] for d in all_data], axis=0).astype(np.float32)
-    all_kpts18   = np.concatenate([d["kpts18"] for d in all_data], axis=0).astype(np.float32)
+    all_reference_keypoints = np.concatenate([d["reference_keypoints"] for d in all_data], axis=0).astype(np.float32)
     all_envs     = np.array([e for d in all_data for e in [d["environment"]] * d["csi"].shape[0]])
     all_subjects = np.array([s for d in all_data for s in [d["sample"]]      * d["csi"].shape[0]])
     all_actions  = np.array([a for d in all_data for a in [d["action"]]      * d["csi"].shape[0]])
@@ -260,6 +215,25 @@ def main():
     n_total = all_csi_raw.shape[0]
     n_train = int(np.isin(all_subjects.astype(str), list(train_set)).sum())
     print(f"Total: {n_total}, train: {n_train} ({n_train/n_total*100:.1f}%)")
+
+    print("Loading ground truth...")
+    gt_dir = Path(args.gt_dir)
+    all_gt_parts = []
+    for trial in trials:
+        if str(trial) not in trial_results:
+            continue
+        action = trial.parent.name
+        subject = trial.name
+        env_num = (int(subject.lstrip("S")) - 1) // 10 + 1
+        gt_file = gt_dir / f"E{env_num:02d}_{subject}_{action}.npy"
+        gt_data = np.load(str(gt_file))
+        gt_kpts = gt_data[..., :2].copy()
+        expected_frames = trial_results[str(trial)]["csi"].shape[0]
+        assert gt_kpts.shape[0] == expected_frames, \
+            f"Frame mismatch: {gt_file.name} has {gt_kpts.shape[0]}, expected {expected_frames}"
+        all_gt_parts.append(gt_kpts.astype(np.float32))
+    all_gt = np.concatenate(all_gt_parts, axis=0)
+    print(f"  ground truth: {all_gt.shape}")
 
     print("Computing normalization statistics (train set only)...")
     train_mask = np.isin(all_subjects.astype(str), list(train_set))
@@ -291,23 +265,28 @@ def main():
     np.save(str(dst_root / "csi_gminmax.npy"), csi_gminmax)
     np.save(str(dst_root / "csi_gzscore.npy"), csi_gzscore)
     np.save(str(dst_root / "csi_zscore.npy"),  csi_zscore)
-    np.save(str(dst_root / "ground_truth.npy"), all_kpts18)
+    np.save(str(dst_root / "reference_keypoints.npy"), all_reference_keypoints)
+    np.save(str(dst_root / "ground_truth.npy"), all_gt)
     np.savez(str(dst_root / "meta.npz"),
              environment=all_envs, sample=all_subjects,
              action=all_actions, frame_idx=all_fidx)
 
     stats = {
-        "amplitude_train_min":  amp_min,
-        "amplitude_train_max":  amp_max,
+        "amplitude_train_min": amp_min,
+        "amplitude_train_max": amp_max,
         "amplitude_train_mean": amp_mean,
-        "amplitude_train_std":  amp_std,
-        "pose_min": args.pose_min,
-        "pose_max": args.pose_max,
+        "amplitude_train_std": amp_std,
         "time_packets": TIME_PACKETS,
         "rx_antennas": RX_ANTENNAS,
         "subcarriers": SUBCARRIERS,
         "total_frames": n_total,
         "train_frames": n_train,
+        "normalization_subjects": args.train_subjects,
+        "pose_format": "H36M17",
+        "reference_format": "raw_coco17_no_mapping",
+        "gt_source": str(args.gt_dir),
+        "ground_truth_shape": list(all_gt.shape),
+        "reference_keypoints_shape": list(all_reference_keypoints.shape),
     }
     with open(dst_root / "stats.json", "w") as f:
         json.dump(stats, f, indent=2)

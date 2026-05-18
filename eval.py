@@ -12,7 +12,7 @@ from matplotlib.axes import Axes
 from torch.utils.data import DataLoader
 
 from dataloader import create_memmap_data_loader
-from models import OPENPOSE_BONE_EDGES, WiFlowModel
+from models import H36M17_NAMES, H36M_BONE_EDGES, WiFlowModel
 from train import compute_metrics, compute_torso_scale, extract_prediction_keypoints, prepare_model_input, select_device
 
 
@@ -135,10 +135,13 @@ def build_joint_metric_rows(
     all_joint_errors = torch.cat(list(joint_errors), dim=0)
     all_joint_pck = torch.cat(list(joint_pck), dim=0)
     rows: list[dict[str, float | int]] = []
-    for joint_index in range(all_joint_errors.shape[1]):
+    num_joints = all_joint_errors.shape[1]
+    for joint_index in range(num_joints):
+        joint_name = H36M17_NAMES[joint_index] if joint_index < len(H36M17_NAMES) else f"joint_{joint_index}"
         rows.append(
             {
                 "joint_index": joint_index,
+                "joint_name": joint_name,
                 "sample_count": int(all_joint_errors.shape[0]),
                 "mpjpe": float(all_joint_errors[:, joint_index].mean().item()),
                 "pck_0_2": float(all_joint_pck[:, joint_index].mean().item()),
@@ -241,8 +244,8 @@ def save_visualizations(
             axes[0].set_ylabel("Antenna × Subcarrier")
             axes[0].set_xlabel("Time (T=64)")
 
-            plot_skeleton(axes[1], target_np, OPENPOSE_BONE_EDGES, "Ground Truth", color="green")
-            plot_skeleton(axes[2], prediction, OPENPOSE_BONE_EDGES, "WiFlow Prediction", color="red")
+            plot_skeleton(axes[1], target_np, H36M_BONE_EDGES, "Ground Truth", color="green")
+            plot_skeleton(axes[2], prediction, H36M_BONE_EDGES, "WiFlow Prediction", color="red")
 
             fig.tight_layout()
             filename = safe_stem(action, environment, f"frame{batch['frame_idx'][i]}") + ".png"
